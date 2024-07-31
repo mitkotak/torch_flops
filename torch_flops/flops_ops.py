@@ -222,6 +222,14 @@ def FunctionFLOPs_matmul(result: Tensor, *args, **kwargs) -> int:
     return total_flops
 
 
+def FunctionFLOPs_einsum(result: Tensor, *args, **kwargs) -> int:
+    from opt_einsum import contract_path
+    equation = args[0]
+    operands = args[1:]
+    _, info = contract_path(equation, *operands)
+    total_flops = int(info.naive_cost)
+    return total_flops
+
 def FunctionFLOPs_linear(result: Tensor, *args, **kwargs) -> int:
     if len(args) == 3:
         input, weight, bias = args
@@ -386,6 +394,7 @@ MODULE_FLOPs_MAPPING = {
 FUNCTION_FLOPs_MAPPING = {
     'getattr': FunctionFLOPs_zero,
     'getitem': FunctionFLOPs_zero,
+    'einsum': FunctionFLOPs_einsum,
     'mul': FunctionFLOPs_elemwise,
     'truediv': FunctionFLOPs_elemwise,
     'sub': FunctionFLOPs_elemwise,
@@ -406,6 +415,7 @@ FUNCTION_FLOPs_MAPPING = {
     'interpolate': FunctionFLOPs_interpolate,
 }
 METHOD_FLOPs_MAPPING = {
+    '__setitem__': MethodFLOPs_zero,
     'reshape': MethodFLOPs_zero,
     'permute': MethodFLOPs_zero,
     'unbind': MethodFLOPs_zero,
@@ -426,5 +436,6 @@ METHOD_FLOPs_MAPPING = {
     'clone': MethodFLOPs_zero,
     'new_empty': MethodFLOPs_zero,
     'normal_': MethodFLOPs_zero,
+    'add_': MethodFLOPs_elemwise,
     'pow': MethodFLOPs_zero,
 }

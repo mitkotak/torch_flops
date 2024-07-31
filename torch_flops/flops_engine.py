@@ -131,7 +131,7 @@ class ShapeProp(torch.fx.Interpreter):
         mem_func_name: str = kwargs.get('mem_func_name', 'max_memory_allocated')
         assert mem_func_name in ['memory_allocated', 'max_memory_allocated']
         ignore_ops = kwargs.get('ignore_ops', [])
-
+    
         fake_mode = None
         if fake_mode is not None:
             from torch._dynamo.utils import deepcopy_to_fake_tensor
@@ -153,7 +153,7 @@ class ShapeProp(torch.fx.Interpreter):
         self.real_module = self.module
         self.ignore_ops = ignore_ops
         self.mem_func_name = mem_func_name
-        self.device = next(gm.parameters()).device
+        self.device = torch.device('cuda')
 
     @compatibility(is_backward_compatible=True)
     def call_module(self, target: 'Target', args: Tuple[Argument, ...], kwargs: Dict[str, Any]) -> Any:
