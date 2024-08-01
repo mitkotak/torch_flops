@@ -221,6 +221,21 @@ def FunctionFLOPs_matmul(result: Tensor, *args, **kwargs) -> int:
     total_flops = flops_matmul(tensor_A.shape, tensor_B.shape, result.shape)
     return total_flops
 
+def FunctionFLOPs_normalize(result: Tensor, *args, **kwargs) -> int:
+    assert len(args) == 1, len(args)
+    input_tensor = args[0]
+    assert isinstance(input_tensor, Tensor)
+
+    p = kwargs.get('p', 2)
+    dim = kwargs.get('dim', 1)
+
+    input_shape = input_tensor.shape
+    n = input_shape[0]  # number of samples
+    d = input_shape[1] if len(input_shape) > 1 else 1  # dimensionality of each sample
+    
+    # FLOPs for sum of squares, square root, and division
+    total_flops = 2 * n * d + 1
+    return total_flops
 
 def FunctionFLOPs_einsum(result: Tensor, *args, **kwargs) -> int:
     from opt_einsum import contract_path
@@ -392,6 +407,9 @@ MODULE_FLOPs_MAPPING = {
     'type_as': ModuleFLOPs_zero
 }
 FUNCTION_FLOPs_MAPPING = {
+    'stack': FunctionFLOPs_zero,
+    'ones_like': FunctionFLOPs_zero,
+    'normalize': FunctionFLOPs_normalize,
     'getattr': FunctionFLOPs_zero,
     'getitem': FunctionFLOPs_zero,
     'einsum': FunctionFLOPs_einsum,
