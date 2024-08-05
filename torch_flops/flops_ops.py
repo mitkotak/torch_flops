@@ -203,6 +203,36 @@ def FunctionFLOPs_trig(result: Tensor | Number, *args, **kwargs) -> int:
     assert len(args) == 1, len(args)
     return flops_elemwise(result.shape)
 
+def FunctionFLOPs_sum(result: Tensor, *args, **kwargs) -> int:
+    self_obj = args[0]
+    this_shape = self_obj.shape
+    result_shape = result.shape
+    
+    dim = args[1]
+    keep_dim = args[2]
+    input_elements = self_obj.numel()
+    total_flops = None
+    if dim is None:
+        # If no dimension is specified, sum over all elements
+        total_flops = input_elements - 1
+    else:
+        # If dimensions are specified, calculate the FLOPs for reduction
+        if not isinstance(dim, (list, tuple)):
+            dim = [dim]
+            
+        if keep_dim:
+            reduction_elements = [this_shape[d] for d in dim]
+        else:
+            reduction_elements  = [this_shape[d] for d in dim if d < len(this_shape)]
+            
+        reduction_size = 1
+        for size in reduction_elements:
+            reduction_size *= size
+            
+        total_flops = input_elements - reduction_size
+
+    return total_flops
+
 def FunctionFLOPs_elemwise(result: Tensor | Number, *args, **kwargs) -> int:
     assert len(args) == 2, len(args)
 
@@ -224,6 +254,45 @@ def FunctionFLOPs_matmul(result: Tensor, *args, **kwargs) -> int:
     assert isinstance(tensor_A, Tensor) and isinstance(tensor_B, Tensor)
 
     total_flops = flops_matmul(tensor_A.shape, tensor_B.shape, result.shape)
+    return total_flops
+
+
+def FunctionFLOPS_linalg_norm(result: Tensor, *args, **kwargs) -> int:
+    assert len(args) == 3, len(args)
+    input_tensor = args[0]
+    p = args[1] if args[1] is not None else 2 # Default to 2-norm if not specified
+    dim = args[2] 
+
+    num_elements = input_tensor.numel()
+
+    if isinstance(dim, (tuple, list)):
+        dim = list(dim)
+    else:
+        dim = [dim] if dim is not None else []
+
+    # Compute the number of elements along the dimensions to be reduced
+    if dim:
+        reduced_shape = list(input_tensor.shape)
+        for d in sorted(dim, reverse=True):
+            reduced_shape.pop(d)
+        import torch
+        num_elements_after_reduction = torch.prod(torch.tensor(reduced_shape)).item()
+    else:
+        num_elements_after_reduction = 1
+
+    # Compute FLOPs based on the norm type
+    if p == 1:  # L1 norm
+        # Absolute value for each element + sum
+        total_flops += 2 * num_elements - 1 # sum + # abs
+        if dim:
+            total_flops *= num_elements_after_reduction
+
+    elif p == 2:  # L2 norm
+        # Square each element + sum
+        total_flops = 3*num_elements + 1 # square + sum + sqrt
+        if dim:
+            total_flops *= num_elements_after_reduction
+
     return total_flops
 
 def FunctionFLOPS_linalg_vector_norm(result: Tensor, *args, **kwargs) -> int:
@@ -383,6 +452,41 @@ def FunctionFLOPs_interpolate(result: Tensor, *args, **kwargs) -> int:
 
     return flops
 
+def FunctionFLOPs_silu(result: Tensor, *args, **kwargs) -> int:
+    self_obj = args[0]
+    
+    # Number of elements in the input tensor
+    num_elements = self_obj.numel()
+    
+    # FLOPs for sigmoid calculation per element:
+    # sigmoid(x) = 1 / (1 + exp(-x))
+    # This involves 1 exponential, 1 addition, and 1 division per element
+    flops_per_sigmoid = 4  # considering exp, addition, division, and multiplication for 1 / (1 + exp(-x))
+    
+    # FLOPs for the multiplication with the original element
+    flops_per_silu = flops_per_sigmoid + 1
+    
+    # Total FLOPs
+    total_flops = num_elements * flops_per_silu
+    
+    return total_flops
+
+def FunctionFLOPs_scatter_add(result: Tensor, *args, **kwargs) -> int:
+    self_obj = args[0]
+    dim = args[1]
+    index = args[2]
+    src = args[3]
+
+    # Ensure the index tensor and the source tensor have the same shape
+    assert index.shape == src.shape, "Index and source tensors must have the same shape"
+
+    # Number of elements in the index/source tensor
+    num_elements = index.numel()
+
+    # Each scatter_add operation involves one addition per element
+    total_flops = num_elements
+
+    return total_flops
 
 # For MethodFLOPs
 def MethodFLOPs_zero(self_obj: Tensor, result: Tensor, *args_tail, **kwargs) -> int:
@@ -464,13 +568,23 @@ MODULE_FLOPs_MAPPING = {
     'type_as': ModuleFLOPs_zero
 }
 FUNCTION_FLOPs_MAPPING = {
+    'scatter_add.default': FunctionFLOPs_scatter_add,
+    'silu.default': FunctionFLOPs_silu,
+    'index.Tensor': FunctionFLOPs_zero,
+    'unsqueeze.default': FunctionFLOPs_zero,
+    'squeeze.dim': FunctionFLOPs_zero,
+    'index_select.default': FunctionFLOPs_zero,
     'select.int': FunctionFLOPs_zero,
+    'one_hot.default': FunctionFLOPs_zero,
     'ones_like.default': FunctionFLOPs_zero,
     'new_zeros.default': FunctionFLOPs_zero,
     'slice_scatter.default': FunctionFLOPs_zero,
+    '_to_copy.default': FunctionFLOPs_zero,
     'copy.default': FunctionFLOPs_zero,
     'slice.Tensor': FunctionFLOPs_zero,
     'cat.default': FunctionFLOPs_zero,
+    'clone.default': FunctionFLOPs_zero,
+    '_unsafe_view.default': FunctionFLOPs_zero,
     'view.default': FunctionFLOPs_zero,
     'permute.default': FunctionFLOPs_zero,
     'tensordot.default': FunctionFLOPs_tensordot,
@@ -478,6 +592,8 @@ FUNCTION_FLOPs_MAPPING = {
     'stack.default': FunctionFLOPs_zero,
     'stack': FunctionFLOPs_zero,
     'ones_like': FunctionFLOPs_zero,
+    'broadcast_tensors.default': FunctionFLOPs_zero,
+    'linalg_norm.default': FunctionFLOPS_linalg_norm,
     'linalg_vector_norm.default': FunctionFLOPS_linalg_vector_norm,
     'normalize': FunctionFLOPs_normalize,
     'getattr': FunctionFLOPs_zero,
@@ -485,17 +601,23 @@ FUNCTION_FLOPs_MAPPING = {
     'clamp_min.default': FunctionFLOPs_elemwise,
     'einsum.default': FunctionFLOPs_einsum,
     'einsum': FunctionFLOPs_einsum,
+    'lt.Scalar': FunctionFLOPs_elemwise,
+    'sin.default': FunctionFLOPs_trig,
     'tanh.default': FunctionFLOPs_trig,
     'expand.default': FunctionFLOPs_zero,
     'pow.Tensor_Scalar': FunctionFLOPs_elemwise,
     'div.Tensor': FunctionFLOPs_elemwise,
     'add.Tensor': FunctionFLOPs_elemwise,
+    'rsub.Scalar': FunctionFLOPs_elemwise,
+    'sub.Scalar': FunctionFLOPs_elemwise,
     'sub.Tensor': FunctionFLOPs_elemwise,
     'mul.Tensor': FunctionFLOPs_elemwise,
     'mul': FunctionFLOPs_elemwise,
     'truediv': FunctionFLOPs_elemwise,
     'sub': FunctionFLOPs_elemwise,
+    'matmul.default': FunctionFLOPs_matmul,
     'matmul': FunctionFLOPs_matmul,
+    'sum.dim_IntList': FunctionFLOPs_sum,
     'add': FunctionFLOPs_elemwise,
     'concat': FunctionFLOPs_zero,
     '_assert': FunctionFLOPs_zero,

@@ -402,6 +402,25 @@ class TorchFLOPsByFX():
         self.__flag_propagated = False
 
     def propagate(self, *args):
+        
+        # Input preprocessing for Nequip/Allegro
+        if len(args) == 1:
+            inputs_args = list(args[0].values())
+        else:
+            inputs_args = args
+        
+        self.input_memory = sum(tensor.element_size() * tensor.numel() for tensor in inputs_args)
+        
+        outputs = self.graph_model.forward(*args)
+        
+        # Output processing for Nequip/Allegro
+        if isinstance(outputs, dict):
+            outputs_args = list(outputs.values())
+        else:
+            outputs_args = outputs
+        
+        self.output_memory =  sum(tensor.element_size() * tensor.numel() for tensor in outputs_args)
+
         ShapeProp(self.graph_model, mem_func_name=self.mem_func_name, ignore_ops=self.ignore_ops).propagate(*args)
 
         result_table = []
@@ -468,7 +487,7 @@ class TorchFLOPsByFX():
         num_empty_flops = len(self.result_table) - len(valid_flops_list)
 
         if show:
-            print(f"total_flops = {total_flops:3,}", f"({num_empty_flops} operations are ignored or not recognized)" if num_empty_flops else "")
+            print(f"total_flops = {(total_flops)/1e9:.3f} GFLOPs", f"({num_empty_flops} operations are ignored or not recognized)" if num_empty_flops else "")
 
         """
         total_flops = None
@@ -481,9 +500,10 @@ class TorchFLOPsByFX():
             print(f"\033[31m{traceback.format_exc()}\033[0m")
             exit(-1)
         """
+        self.total_flops = total_flops
         return total_flops
 
-    def print_total_time(self, show: bool = True) -> float:
+    def print_empirical_total_time(self, show: bool = True) -> float:
         if not self.__flag_propagated:
             raise RuntimeError(f"Use `propagate()` method first.")
 
@@ -500,13 +520,34 @@ class TorchFLOPsByFX():
             raise RuntimeError(f"Use `propagate()` method first.")
 
         valid_mem_list = list(zip(*self.result_table))[7]
-        max_mem = max(valid_mem_list)
+        model_mem = max(valid_mem_list)
+        self.total_memory = self.input_memory + self.output_memory + model_mem
 
         if show:
-            print(f"max_memory = {max_mem:3,} Bytes")
+            print(f"total_memory = {(self.total_memory/1e9):3f} GB")
+        
+        return self.total_memory
 
-        return max_mem
-
+    def print_analytical_total_time(self, show=True) -> int:
+        if not self.__flag_propagated:
+            raise RuntimeError(f"Use `propagate()` method first.")
+        
+        peak_bandwidth = 768 * 1e9
+        peak_flops = 17.01 * 1e12
+        
+        t_mem = self.total_memory / peak_bandwidth
+        t_flops = self.total_flops / peak_flops
+        
+        intensity = t_flops / t_mem
+        analytical_time = max(t_flops, t_mem)
+        if show:
+            print(f"arithmetic intensity = {intensity:3f} analytical time = {analytical_time*1000:.3f} ms")
+            
+        
+        return analytical_time, intensity
+        
+        
+        
     def save_result_to_csv(self, file_path:str, mode:str='a'):
         with open(file_path, mode) as f:
             writer = csv.writer(f)
