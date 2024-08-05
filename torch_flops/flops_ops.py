@@ -199,6 +199,10 @@ def FunctionFLOPs_zero(result: Tensor, *args, **kwargs) -> int:
     return flops_zero()
 
 
+def FunctionFLOPs_trig(result: Tensor | Number, *args, **kwargs) -> int:
+    assert len(args) == 1, len(args)
+    return flops_elemwise(result.shape)
+
 def FunctionFLOPs_elemwise(result: Tensor | Number, *args, **kwargs) -> int:
     assert len(args) == 2, len(args)
 
@@ -207,11 +211,12 @@ def FunctionFLOPs_elemwise(result: Tensor | Number, *args, **kwargs) -> int:
         total_flops = 1
     elif isinstance(result, Tensor):
         total_flops = flops_elemwise(result.shape)
+    elif isinstance(result, Size):
+        total_flops = 0
     else:
         raise TypeError(type(result))
 
     return total_flops
-
 
 def FunctionFLOPs_matmul(result: Tensor, *args, **kwargs) -> int:
     assert len(args) == 2, len(args)
@@ -221,6 +226,38 @@ def FunctionFLOPs_matmul(result: Tensor, *args, **kwargs) -> int:
     total_flops = flops_matmul(tensor_A.shape, tensor_B.shape, result.shape)
     return total_flops
 
+def FunctionFLOPS_linalg_vector_norm(result: Tensor, *args, **kwargs) -> int:
+    assert len(args) == 4, len(args)
+    input_tensor = args[0]
+    assert isinstance(input_tensor, Tensor)
+    p = int(args[1])
+    dim = args[2][0]
+    assert isinstance(dim, int)
+
+    num_elements = input_tensor.numel()
+
+    if p == 1:  # L1 norm
+        # Absolute value for each element + sum
+       total_flops = num_elements + (num_elements - 1)
+    elif p == 2:  # L2 norm
+        # Square each element + sum + square root
+        total_flops = num_elements + (num_elements - 1)
+    elif p == float('inf'):  # Infinity norm
+        # Absolute value for each element + comparisons for max
+        total_flops = num_elements + (num_elements - 1)
+    else:  # General case
+        # Power operation + sum + nth root
+        total_flops = num_elements * 2 + (num_elements - 1) + 1
+
+    # If dim is specified, we're calculating multiple norms
+    if dim is not None:
+        # Calculate the number of norms we're computing
+        num_norms = num_elements // input_tensor.size(dim)
+        total_flops *= num_norms
+    
+    return total_flops
+    
+    
 def FunctionFLOPs_normalize(result: Tensor, *args, **kwargs) -> int:
     assert len(args) == 1, len(args)
     input_tensor = args[0]
@@ -237,12 +274,32 @@ def FunctionFLOPs_normalize(result: Tensor, *args, **kwargs) -> int:
     total_flops = 2 * n * d + 1
     return total_flops
 
+def FunctionFLOPs_tensordot(result: Tensor, *args, **kwargs) -> int:
+    a = args[0]
+    b = args[1]
+    if len(kwargs) == 0:
+        reduce_dims_a = tuple([a.shape[arg] for arg in args[2]])
+        reduce_dims_b = tuple([b.shape[arg] for arg in args[3]])
+    else:
+        dims = kwargs['dims']
+        assert len(dims[0]) == len(dims[1]) == 1
+        reduce_dims_a = tuple([a.shape[arg] for arg in dims[0]])
+        reduce_dims_b = tuple([a.shape[arg] for arg in dims[1]])
+    assert reduce_dims_a == reduce_dims_b
+    from functools import reduce
+    import operator
+    reduce_dim_shape = reduce(operator.mul, reduce_dims_b, 1)
+    return (2 * reduce_dim_shape - 1) * result.shape.numel()
+
 def FunctionFLOPs_einsum(result: Tensor, *args, **kwargs) -> int:
     from opt_einsum import contract_path
+    import torch
     equation = args[0]
     operands = args[1:]
+    if isinstance(operands[0], torch.fx.immutable_collections.immutable_list):
+        operands = tuple(operands[0])
     _, info = contract_path(equation, *operands)
-    total_flops = int(info.naive_cost)
+    total_flops = int(info.opt_cost)
     return total_flops
 
 def FunctionFLOPs_linear(result: Tensor, *args, **kwargs) -> int:
@@ -407,12 +464,34 @@ MODULE_FLOPs_MAPPING = {
     'type_as': ModuleFLOPs_zero
 }
 FUNCTION_FLOPs_MAPPING = {
+    'select.int': FunctionFLOPs_zero,
+    'ones_like.default': FunctionFLOPs_zero,
+    'new_zeros.default': FunctionFLOPs_zero,
+    'slice_scatter.default': FunctionFLOPs_zero,
+    'copy.default': FunctionFLOPs_zero,
+    'slice.Tensor': FunctionFLOPs_zero,
+    'cat.default': FunctionFLOPs_zero,
+    'view.default': FunctionFLOPs_zero,
+    'permute.default': FunctionFLOPs_zero,
+    'tensordot.default': FunctionFLOPs_tensordot,
+    'tensordot': FunctionFLOPs_tensordot,
+    'stack.default': FunctionFLOPs_zero,
     'stack': FunctionFLOPs_zero,
     'ones_like': FunctionFLOPs_zero,
+    'linalg_vector_norm.default': FunctionFLOPS_linalg_vector_norm,
     'normalize': FunctionFLOPs_normalize,
     'getattr': FunctionFLOPs_zero,
     'getitem': FunctionFLOPs_zero,
+    'clamp_min.default': FunctionFLOPs_elemwise,
+    'einsum.default': FunctionFLOPs_einsum,
     'einsum': FunctionFLOPs_einsum,
+    'tanh.default': FunctionFLOPs_trig,
+    'expand.default': FunctionFLOPs_zero,
+    'pow.Tensor_Scalar': FunctionFLOPs_elemwise,
+    'div.Tensor': FunctionFLOPs_elemwise,
+    'add.Tensor': FunctionFLOPs_elemwise,
+    'sub.Tensor': FunctionFLOPs_elemwise,
+    'mul.Tensor': FunctionFLOPs_elemwise,
     'mul': FunctionFLOPs_elemwise,
     'truediv': FunctionFLOPs_elemwise,
     'sub': FunctionFLOPs_elemwise,
@@ -422,6 +501,7 @@ FUNCTION_FLOPs_MAPPING = {
     '_assert': FunctionFLOPs_zero,
     'eq': FunctionFLOPs_elemwise,
     'cat': FunctionFLOPs_zero,
+    'linear.default': FunctionFLOPs_linear,
     'linear': FunctionFLOPs_linear,
     'conv1d': FunctionFLOPs_convnd,
     'conv2d': FunctionFLOPs_convnd,
@@ -433,6 +513,7 @@ FUNCTION_FLOPs_MAPPING = {
     'interpolate': FunctionFLOPs_interpolate,
 }
 METHOD_FLOPs_MAPPING = {
+    'narrow': MethodFLOPs_zero,
     '__setitem__': MethodFLOPs_zero,
     'reshape': MethodFLOPs_zero,
     'permute': MethodFLOPs_zero,

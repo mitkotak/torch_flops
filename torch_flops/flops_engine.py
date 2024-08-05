@@ -372,7 +372,7 @@ class ShapeProp(torch.fx.Interpreter):
 
 
 class TorchFLOPsByFX():
-    def __init__(self, model: nn.Module, mem_func_name: Literal['memory_allocated', 'max_memory_allocated'] = 'max_memory_allocated', ignore_ops: Sequence[str] = []):
+    def __init__(self, model: nn.Module, args: Tuple[Any, ...], mem_func_name: Literal['memory_allocated', 'max_memory_allocated'] = 'max_memory_allocated', ignore_ops: Sequence[str] = []):
         '''
         model: the model.
         mem_func_name: which function to measure the GPU memory; choosed from 'memory_allocated' and 'max_memory_allocated'; default: 'max_memory_allocated'.
@@ -380,7 +380,8 @@ class TorchFLOPsByFX():
         '''
         model.eval()
         try:
-            self.graph_model: GraphModule = symbolic_trace(model)
+            ep = torch.export.export(model, args)
+            self.graph_model: GraphModule = symbolic_trace(ep.module())
         except torch.fx.proxy.TraceError as e:
             print("\033[33mNOTE: The model cannot be built as a graph model by 'symbolic_trace()'. Please remove the `assert`, `if` and `for` operations. " +
                   "See 'https://pytorch.org/docs/stable/fx.html#limitations-of-symbolic-tracing' for more instructions.\033[0m")
@@ -388,7 +389,7 @@ class TorchFLOPsByFX():
         except TypeError as e:
             print("\033[33mNOTE: The model cannot be built as a graph model by 'symbolic_trace()'. Please replace the `tensor.shape[i]` that servers as the parameter of a function with a pre-defined deterministic value.\033[0m")
             raise e
-
+        # print(self.graph_model.graph.print_tabular())
         assert mem_func_name in ['memory_allocated', 'max_memory_allocated']
         self.mem_func_name = mem_func_name
         if isinstance(ignore_ops, str):
@@ -417,7 +418,10 @@ class TorchFLOPsByFX():
 
             node_module_name = ''
             if (_var_name := 'nn_module_stack') in node.meta:
-                node_module_name = next(reversed(node.meta[_var_name].values())).__name__
+                if isinstance(next(reversed(node.meta[_var_name].values())), tuple):
+                    node_module_name = next(reversed(node.meta[_var_name].values()))[1].__name__
+                else:
+                    node_module_name = next(reversed(node.meta[_var_name].values())).__name__
                 # node_module_name = ".".join([_v.__name__ for _v in node.meta[_var_name].values()])
             _result_row.append(node_module_name)
 
