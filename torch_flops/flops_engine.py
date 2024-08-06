@@ -541,7 +541,7 @@ class TorchFLOPsByFX():
         intensity = t_flops / t_mem
         analytical_time = max(t_flops, t_mem)
         if show:
-            print(f"arithmetic intensity = {intensity:3f} analytical time = {analytical_time*1000:.3f} ms")
+            print(f"arithmetic intensity = {intensity:3f} analytical time = {analytical_time*1000:.3f} ms GFLOPs/s = {((self.total_flops/1e9)/analytical_time):.3f}")
             
         
         return analytical_time, intensity
