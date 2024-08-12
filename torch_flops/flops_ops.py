@@ -1,49 +1,98 @@
 from torch import nn, Tensor, Size
 from torch.types import Number
+import numpy as np
+from typing import Tuple, List, Union
 
-__all__ = ['MODULE_FLOPs_MAPPING', 'FUNCTION_FLOPs_MAPPING', 'METHOD_FLOPs_MAPPING']
+__all__ = ['FUNCTION_COST_MAPPING']
 
+def cost_elemwise(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input1 = args[0]
+    input1 = Tensor([input1]) if not isinstance(input1, Tensor) else input1
+    input_mem = input1.numel() * input1.element_size()
+   
+    if len(args) > 1:
+        input2 = args[1]
+        input2 = Tensor([input2]) if not isinstance(input2, Tensor) else input2
+        input_mem += input2.numel() * input2.element_size()
 
-def flops_zero() -> int:
-    return 0
+    # FLOPs: n
+    # Memory: 2*n
+    flops = result.numel()
 
+    # Assuming both inputs have same dtype
+    output_mem = result.numel() * result.element_size()
+    mem = input_mem + output_mem
 
-def flops_elemwise(result_shape: Size) -> int:
-    return result_shape.numel()
+    return flops, mem
 
-
-def flops_matmul(tensor1_shape: Size, tensor2_shape: Size, result_shape: Size) -> int:
-    # 可根据输入维度改为分情况处理，参考https://github.com/zhijian-liu/torchprofile/blob/6d80fe57bb8c6bc9f789da7925fac6547fa9502b/torchprofile/handlers.py#L35
+def cost_matmul(result: Tensor, *args, **kwargs):
+    
+    assert len(args) == 2, len(args)
+    tensor_A, tensor_B = args
+    
+    assert isinstance(tensor_A, Tensor) and isinstance(tensor_B, Tensor)
     def get_reduce_dim_shape(_s: Size, is_first_mat: bool):
         return _s[0] if len(_s) == 1 else _s[-1 if is_first_mat else -2]
 
-    reduce_dim_shape = get_reduce_dim_shape(tensor1_shape, True)
-    assert reduce_dim_shape == get_reduce_dim_shape(tensor2_shape, False)
-    return (2 * reduce_dim_shape - 1) * result_shape.numel()
+    reduce_dim_shape = get_reduce_dim_shape(tensor_A.shape, True)
+    assert reduce_dim_shape == get_reduce_dim_shape(tensor_B.shape, False)
+    flops = (2 * reduce_dim_shape - 1) * result.shape.numel()
+    
+    input_mem = _prod(tensor_A.shape) * tensor_A.element_size() + _prod(tensor_B.shape) * tensor_B.element_size()
+    output_mem = _prod(result.shape) * result.element_size()
+    mem = input_mem + output_mem
+
+    return flops, mem
 
 # For nn.modules.*
-def flops_convnd(module: nn.modules.conv._ConvNd, input_shape: Size, result_shape: Size) -> int:
+def cost_functional_1d(module: nn.modules.conv._ConvNd, input_shape: Size, result_shape: Size, dtype_size: int=4) -> Tuple[int, int]:
     kernel_size = Size([__k]) if isinstance(__k := module.kernel_size, int) else Size(__k)
-    return (2 * kernel_size.numel() * module.in_channels - int(module.bias is None) * module.groups) * result_shape.numel()
+    flops = (2 * kernel_size.numel() * module.in_channels - int(module.bias is None) * module.groups) * result_shape.numel()
+    
+    input_mem = input_shape.numel() * dtype_size
+    weight_mem = module.weight.numel() * dtype_size
+    bias_mem = module.out_channels * dtype_size if module.bias is not None else 0
+    output_mem = result_shape.numel() * dtype_size
+    mem = input_mem + weight_mem + bias_mem + output_mem
+    
+    return flops, mem
 
 
-def flops_avgpoolnd(module: nn.modules.pooling._AvgPoolNd, input_shape: Size, result_shape: Size) -> int:
+def cost_avgpoolnd(module: nn.modules.pooling._AvgPoolNd, input_shape: Size, result_shape: Size, dtype_size: int = 4) -> int:
     kernel_size = Size([__k]) if isinstance(__k := module.kernel_size, int) else Size(__k)
-    return kernel_size.numel() * result_shape.numel()
+    flops = kernel_size.numel() * result_shape.numel()
+    
+    input_mem = np.prod(input_shape) * dtype_size
+    output_mem = np.product(result_shape) * dtype_size
+    mem = input_mem + output_mem
+    
+    return flops, mem    
 
 
-def flops_adaptive_avgpoolnd(module: nn.modules.pooling._AdaptiveAvgPoolNd, input_shape: Size, result_shape: Size) -> int:
+def cost_adaptive_avgpoolnd(module: nn.modules.pooling._AdaptiveAvgPoolNd, input_shape: Size, result_shape: Size, dtype_size: int = 4) -> int:
     kernel_size = Size(
         i_size // o_size if (i_size % o_size) == 0 else i_size - o_size * (i_size // o_size) + 1
         for i_size, o_size in zip(input_shape[2:], result_shape[2:])
     )
-    return kernel_size.numel() * result_shape.numel()
+    
+    flops = kernel_size.numel() * result_shape.numel()
+    
+    input_mem = np.prod(input_shape) * dtype_size
+    output_mem = np.prod(result_shape) * dtype_size
+    mem = input_mem + output_mem
+    
+    return flops, mem
 
-
-def flops_maxpoolnd(module: nn.modules.pooling._AvgPoolNd, input_shape: Size, result_shape: Size) -> int:
+def cost_maxpoolnd(module: nn.modules.pooling._MaxPoolNd, input_shape: Size, result_shape: Size, dtype_size: int = 4) -> Tuple[int, int]:
     kernel_size = Size([__k]) if isinstance(__k := module.kernel_size, int) else Size(__k)
-    return (kernel_size.numel() - 1) * result_shape.numel()
+    
+    flops = (kernel_size.numel() - 1) * result_shape.numel()
+    
+    input_mem = np.prod(input_shape) * dtype_size
+    output_mem = np.prod(result_shape) * dtype_size
+    mem = input_mem + output_mem
 
+    return flops, mem
 
 def flops_adaptive_maxpoolnd(module: nn.modules.pooling._AdaptiveMaxPoolNd, input_shape: Size, result_shape: Size) -> int:
     kernel_size = Size(
@@ -53,157 +102,21 @@ def flops_adaptive_maxpoolnd(module: nn.modules.pooling._AdaptiveMaxPoolNd, inpu
     return (kernel_size.numel() - 1) * result_shape.numel()
 
 
-def flops_functional_convnd(bias: int, groups: int, kernel_size: Size, in_channels: int, result_shape: Size) -> int:
-    total_flops = (2 * kernel_size.numel() * in_channels - int(bias is None) * groups) * result_shape.numel()
-    return total_flops
+def cost_adaptive_maxpoolnd(module: nn.modules.pooling._AdaptiveMaxPoolNd, input_shape: Size, result_shape: Size, dtype_size: int = 4) -> Tuple[int, int]:
+    kernel_size = Size(
+        i_size // o_size if (i_size % o_size) == 0 else i_size - o_size * (i_size // o_size) + 1
+        for i_size, o_size in zip(input_shape[2:], result_shape[2:])
+    )
+    flops = (kernel_size.numel() - 1) * result_shape.numel()
+    
+    input_mem = np.prod(input_shape) * dtype_size
+    output_mem = np.prod(result_shape) * dtype_size
+    mem = input_mem + output_mem
+
+    return flops, mem
 
 
-# For ModuleFLOPs
-def ModuleFLOPs_zero(module: nn.Linear, result: Tensor, *args, **kwargs) -> int:
-    return flops_zero()
-
-
-def ModuleFLOPs_elemwise(module: nn.Module, result: Tensor, *args, **kwargs) -> int:
-    assert len(args) == 1
-    assert isinstance(args[0], Tensor)
-    assert isinstance(result, Tensor)
-
-    input_shape = args[0].shape  # [..., d_in]
-    result_shape = result.shape
-    assert input_shape == result_shape
-
-    total_flops = flops_elemwise(result_shape)
-    return total_flops
-
-
-def ModuleFLOPs_LeakyReLU(module: nn.LeakyReLU, result: Tensor, *args, **kwargs) -> int:
-    return result.numel() * 4
-
-
-def ModuleFLOPs_Linear(module: nn.Linear, result: Tensor, *args, **kwargs) -> int:
-    assert len(args) == 1
-    assert isinstance(args[0], Tensor)
-    assert isinstance(result, Tensor)
-
-    input_shape = args[0].shape  # [..., d_in]
-    weight_shape = module.weight.T.shape  # [d_out, d_in].T -> [d_in, d_out]
-    result_shape = result.shape
-
-    assert input_shape[-1] == weight_shape[0], f"{input_shape}, {weight_shape}"
-    matmul_shape = Size(list(input_shape[:-1]) + list(weight_shape[-1:]))
-    assert matmul_shape == result_shape
-
-    total_flops = flops_matmul(input_shape, weight_shape, result_shape)
-    if module.bias is not None:
-        total_flops += flops_elemwise(result_shape)
-
-    return total_flops
-
-
-def ModuleFLOPs_ConvNd(module: nn.Conv1d | nn.Conv2d | nn.Conv3d, result: Tensor, *args, **kwargs) -> int:
-    assert len(args) == 1
-    assert isinstance(args[0], Tensor)
-    assert isinstance(result, Tensor)
-
-    input_shape = args[0].shape
-    result_shape = result.shape
-
-    total_flops = flops_convnd(module, input_shape, result_shape)
-    return total_flops
-
-
-def ModuleFLOPs_AvgPoolNd(module: nn.AvgPool1d | nn.AvgPool2d | nn.AvgPool3d, result: Tensor, *args, **kwargs) -> int:
-    assert len(args) == 1
-    assert isinstance(args[0], Tensor)
-    assert isinstance(result, Tensor)
-
-    input_shape = args[0].shape
-    result_shape = result.shape
-
-    total_flops = flops_avgpoolnd(module, input_shape, result_shape)
-    return total_flops
-
-
-def ModuleFLOPs_AdaptiveAvgPoolNd(module: nn.AdaptiveAvgPool1d | nn.AdaptiveAvgPool2d | nn.AdaptiveAvgPool3d, result: Tensor, *args, **kwargs) -> int:
-    assert len(args) == 1
-    assert isinstance(args[0], Tensor)
-    assert isinstance(result, Tensor)
-
-    input_shape = args[0].shape
-    result_shape = result.shape
-
-    total_flops = flops_adaptive_avgpoolnd(module, input_shape, result_shape)
-    return total_flops
-
-
-def ModuleFLOPs_MaxPoolNd(module: nn.MaxPool1d | nn.MaxPool2d | nn.MaxPool3d, result: Tensor, *args, **kwargs) -> int:
-    assert len(args) == 1
-    assert isinstance(args[0], Tensor)
-    assert isinstance(result, Tensor)
-
-    input_shape = args[0].shape
-    result_shape = result.shape
-
-    total_flops = flops_maxpoolnd(module, input_shape, result_shape)
-    return total_flops
-
-
-def ModuleFLOPs_AdaptiveMaxPoolNd(module: nn.AdaptiveMaxPool1d | nn.AdaptiveMaxPool2d | nn.AdaptiveMaxPool3d, result: Tensor, *args, **kwargs) -> int:
-    assert len(args) == 1
-    assert isinstance(args[0], Tensor)
-    assert isinstance(result, Tensor)
-
-    input_shape = args[0].shape
-    result_shape = result.shape
-
-    total_flops = flops_adaptive_maxpoolnd(module, input_shape, result_shape)
-    return total_flops
-
-
-def ModuleFLOPs_Norm(module: nn.modules.batchnorm._NormBase | nn.LayerNorm | nn.GroupNorm, result: Tensor, *args, **kwargs) -> int:
-    assert len(args) == 1
-    assert isinstance(args[0], Tensor)
-    assert isinstance(result, Tensor)
-    assert not module.training, "Only support `eval` mode."
-
-    input_shape = args[0].shape  # [..., d_in]
-    result_shape = result.shape
-    assert input_shape == result_shape
-
-    # (X-mean)/std
-    total_flops = flops_elemwise(input_shape) * 2
-    if (hasattr(module, 'affine') and module.affine) or (hasattr(module, 'elementwise_affine'), module.elementwise_affine):
-        total_flops += flops_elemwise(input_shape) * 2
-
-    return total_flops
-
-
-def ModuleFLOPs_GELU(module: nn.GELU, result: Tensor, *args, **kwargs) -> int:
-    assert len(args) == 1
-    assert isinstance(args[0], Tensor)
-    assert isinstance(result, Tensor)
-
-    input_shape = args[0].shape  # [..., d_in]
-    result_shape = result.shape
-    assert input_shape == result_shape
-
-    total_flops = flops_elemwise(result_shape)
-    if module.approximate is None:
-        raise NotImplementedError()
-
-    return total_flops
-
-
-# For FunctionFLOPs
-def FunctionFLOPs_zero(result: Tensor, *args, **kwargs) -> int:
-    return flops_zero()
-
-
-def FunctionFLOPs_trig(result: Tensor | Number, *args, **kwargs) -> int:
-    assert len(args) == 1, len(args)
-    return flops_elemwise(result.shape)
-
-def FunctionFLOPs_sum(result: Tensor, *args, **kwargs) -> int:
+def cost_sum(result: Tensor, *args, **kwargs) -> int:
     self_obj = args[0]
     this_shape = self_obj.shape
     result_shape = result.shape
@@ -231,101 +144,124 @@ def FunctionFLOPs_sum(result: Tensor, *args, **kwargs) -> int:
             
         total_flops = input_elements - reduction_size
 
-    return total_flops
-
-def FunctionFLOPs_elemwise(result: Tensor | Number, *args, **kwargs) -> int:
-    assert len(args) == 2, len(args)
-
-    total_flops = None
-    if isinstance(result, Number):
-        total_flops = 1
-    elif isinstance(result, Tensor):
-        total_flops = flops_elemwise(result.shape)
-    elif isinstance(result, Size):
-        total_flops = 0
-    else:
-        raise TypeError(type(result))
-
-    return total_flops
-
-def FunctionFLOPs_matmul(result: Tensor, *args, **kwargs) -> int:
-    assert len(args) == 2, len(args)
-    tensor_A, tensor_B = args
-    assert isinstance(tensor_A, Tensor) and isinstance(tensor_B, Tensor)
-
-    total_flops = flops_matmul(tensor_A.shape, tensor_B.shape, result.shape)
-    return total_flops
+        input_mem  = input_elements * self_obj.element_size()
+        output_mem = result.numel() * result.element_size()
+        
+        mem = input_mem + output_mem
+        
+    return total_flops, mem
 
 
-def FunctionFLOPS_linalg_norm(result: Tensor, *args, **kwargs) -> int:
-    assert len(args) == 3, len(args)
-    input_tensor = args[0]
-    p = args[1] if args[1] is not None else 2 # Default to 2-norm if not specified
-    dim = args[2] 
-
-    num_elements = input_tensor.numel()
-
-    if isinstance(dim, (tuple, list)):
-        dim = list(dim)
-    else:
-        dim = [dim] if dim is not None else []
-
-    # Compute the number of elements along the dimensions to be reduced
-    if dim:
-        reduced_shape = list(input_tensor.shape)
-        for d in sorted(dim, reverse=True):
-            reduced_shape.pop(d)
-        import torch
-        num_elements_after_reduction = torch.prod(torch.tensor(reduced_shape)).item()
-    else:
-        num_elements_after_reduction = 1
-
-    # Compute FLOPs based on the norm type
-    if p == 1:  # L1 norm
-        # Absolute value for each element + sum
-        total_flops += 2 * num_elements - 1 # sum + # abs
-        if dim:
-            total_flops *= num_elements_after_reduction
-
-    elif p == 2:  # L2 norm
-        # Square each element + sum
-        total_flops = 3*num_elements + 1 # square + sum + sqrt
-        if dim:
-            total_flops *= num_elements_after_reduction
-
-    return total_flops
-
-def FunctionFLOPS_linalg_vector_norm(result: Tensor, *args, **kwargs) -> int:
-    assert len(args) == 4, len(args)
-    input_tensor = args[0]
-    assert isinstance(input_tensor, Tensor)
-    p = int(args[1])
-    dim = args[2][0]
-    assert isinstance(dim, int)
-
-    num_elements = input_tensor.numel()
-
-    if p == 1:  # L1 norm
-        # Absolute value for each element + sum
-       total_flops = num_elements + (num_elements - 1)
-    elif p == 2:  # L2 norm
-        # Square each element + sum + square root
-        total_flops = num_elements + (num_elements - 1)
-    elif p == float('inf'):  # Infinity norm
-        # Absolute value for each element + comparisons for max
-        total_flops = num_elements + (num_elements - 1)
-    else:  # General case
-        # Power operation + sum + nth root
-        total_flops = num_elements * 2 + (num_elements - 1) + 1
-
-    # If dim is specified, we're calculating multiple norms
-    if dim is not None:
-        # Calculate the number of norms we're computing
-        num_norms = num_elements // input_tensor.size(dim)
-        total_flops *= num_norms
+def cost_linalg_norm(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input_tensor = args[0]  # Assuming the first argument is the input tensor
+    ord = args[1] if len(args) > 1 else 2  # Default ord value is 2
+    dim = args[2] if len(args) > 2 else None  # Default dim is None (compute norm of entire tensor)
+    keepdim = args[3] if len(args) > 3 else False  # Default keepdim is False
     
-    return total_flops
+    # Number of elements in the input tensor
+    num_elements = input_tensor.numel()
     
+    # FLOPs calculation
+    if dim is None:
+        # Frobenius norm (default when dim is None)
+        flops = 2 * num_elements # Square and sum all elements, then sqrt
+    elif isinstance(dim, tuple) and len(dim) == 2:
+        # Matrix norm
+        if ord in [1, float('inf')]:
+            flops = num_elements - 1 # Sum along one dimension
+        elif ord == -1 or ord == float('-inf'):
+            flops = num_elements - 1 # Sum along one dimension
+        elif ord == 2 or ord == -2:
+            # Spectral norm (largest singular value)
+            # This is an upper bound, actual cost depends on implementation
+            flops = 10 * num_elements  # Approximate cost of SVD
+        else:
+            # Element-wise operation for other ord values
+            flops = 2 * num_elements
+    else:
+        # Vector norm
+        if ord == 0:
+            flops = num_elements  # Count non-zero elements
+        elif ord == 1:
+            flops = num_elements - 1  # Sum of absolute values
+        elif ord == 2:
+            flops = 2 * num_elements  # Square, sum, then sqrt
+        elif ord == float('inf') or ord == float('-inf'):
+            flops = num_elements  # Find max or min absolute value
+        else:
+            flops = 3 * num_elements  # Power, sum, then root
+    
+    # Memory calculation
+    input_dtype_size = input_tensor.element_size()
+    output_dtype_size = result.element_size()
+    
+    # Read the input tensor
+    input_mem = num_elements * input_dtype_size
+    
+    # Write the output tensor
+    output_mem = result.numel() * output_dtype_size
+    
+    mem = input_mem + output_mem
+
+    return flops, mem
+
+
+def _prod(iterable):
+    result = 1
+    for x in iterable:
+        result *= x
+    return result
+
+def cost_linalg_vector_norm(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input_tensor = args[0]  # Assuming the first argument is the input tensor
+    ord = args[1] if len(args) > 1 else 2  # Default ord value is 2
+    dim = args[2] if len(args) > 2 else None  # Default dim is None (compute norm of entire tensor)
+    keepdim = args[3] if len(args) > 3 else False  # Default keepdim is False
+    
+    # Number of elements in the input tensor
+    num_elements = input_tensor.numel()
+    
+    # Determine the number of vectors
+    if dim is None:
+        num_vectors = 1
+        vector_length = num_elements
+    else:
+        if isinstance(dim, int):
+            dim = (dim,)
+        num_vectors = num_elements // _prod(input_tensor.shape[d] for d in dim)
+        vector_length = _prod(input_tensor.shape[d] for d in dim)
+    
+    # FLOPs calculation
+    if ord == 0:
+        flops = num_elements  # Count non-zero elements
+    elif ord == 1:
+        flops = num_elements  # Sum of absolute values
+    elif ord == 2:
+        flops = 2 * num_elements  # Square, sum, then sqrt for each vector
+    elif ord == float('inf') or ord == float('-inf'):
+        flops = num_elements  # Find max or min absolute value
+    else:
+        flops = 3 * num_elements  # Power, sum, then root for each vector
+    
+    # Add reduction operations
+    flops += num_vectors  # One reduction (e.g., sqrt) per vector
+    
+    # Memory calculation
+    input_dtype_size = input_tensor.element_size()
+    output_dtype_size = result.element_size()
+    
+    # Read the input tensor
+    input_mem = num_elements * input_dtype_size
+    
+    # Write the output tensor
+    output_mem = result.numel() * output_dtype_size
+    
+    # Estimate intermediate memory (e.g., for temporary calculations)
+    intermediate_mem = vector_length * input_dtype_size
+    
+    mem = input_mem + output_mem + intermediate_mem
+
+    return flops, mem
     
 def FunctionFLOPs_normalize(result: Tensor, *args, **kwargs) -> int:
     assert len(args) == 1, len(args)
@@ -343,7 +279,48 @@ def FunctionFLOPs_normalize(result: Tensor, *args, **kwargs) -> int:
     total_flops = 2 * n * d + 1
     return total_flops
 
-def FunctionFLOPs_tensordot(result: Tensor, *args, **kwargs) -> int:
+def cost_normalize(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input_tensor = args[0]  # Assuming the first argument is the input tensor
+    p = kwargs.get('p', 2)  # Default p value is 2
+    dim = kwargs.get('dim', 1)  # Default dim is 1
+    
+    # Number of elements in the input tensor
+    num_elements = input_tensor.numel()
+    
+    # Determine the number of normalization operations
+    if isinstance(dim, int):
+        dim = (dim,)
+    num_normalizations = num_elements // _prod(input_tensor.shape[d] for d in dim)
+    elements_per_normalization = _prod(input_tensor.shape[d] for d in dim)
+    
+    # FLOPs calculation
+    # 1. Compute norm
+    if p == 1:
+        norm_flops = elements_per_normalization  # Sum of absolute values
+    elif p == 2:
+        norm_flops = 2 * elements_per_normalization  # Square, sum, then sqrt
+    else:
+        norm_flops = 3 * elements_per_normalization  # Power, sum, then root
+    
+    div_flops = num_elements # div
+    
+    total_flops = (norm_flops * num_normalizations) + div_flops
+    
+    # Memory calculation
+    dtype_size = input_tensor.element_size()
+    
+    # Read the input tensor
+    input_mem = num_elements * dtype_size
+    
+    # Write the output tensor
+    output_mem = num_elements * dtype_size
+
+    mem = input_mem + output_mem
+
+    return total_flops, mem
+
+
+def cost_tensordot(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
     a = args[0]
     b = args[1]
     if len(kwargs) == 0:
@@ -358,18 +335,55 @@ def FunctionFLOPs_tensordot(result: Tensor, *args, **kwargs) -> int:
     from functools import reduce
     import operator
     reduce_dim_shape = reduce(operator.mul, reduce_dims_b, 1)
-    return (2 * reduce_dim_shape - 1) * result.shape.numel()
+    
+    # FLOPs calculation
+    flops = (2 * reduce_dim_shape - 1) * result.numel()
+    
+    # Memory calculation
+    dtype_size = a.element_size()  # Assuming all tensors have the same data type
+    
+    # Read input tensors
+    input_mem = a.numel() * dtype_size + b.numel() * dtype_size
+    
+    # Write output tensor
+    output_mem = result.numel() * dtype_size
+    
+    # Total memory usage
+    mem = input_mem + output_mem
 
-def FunctionFLOPs_einsum(result: Tensor, *args, **kwargs) -> int:
+    return flops, mem
+
+def cost_einsum(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
     from opt_einsum import contract_path
     import torch
+
     equation = args[0]
     operands = args[1:]
     if isinstance(operands[0], torch.fx.immutable_collections.immutable_list):
         operands = tuple(operands[0])
+    
+    # Calculate FLOPs using opt_einsum
     _, info = contract_path(equation, *operands)
-    total_flops = int(info.opt_cost)
-    return total_flops
+    flops = int(info.opt_cost)
+    
+    # Memory calculation
+    dtype_size = operands[0].element_size()  # Assuming all tensors have the same data type
+    
+    # Read input tensors
+    input_mem = sum(operand.numel() * dtype_size for operand in operands)
+    
+    # Write output tensor
+    output_mem = result.numel() * dtype_size
+    
+    # Estimate intermediate memory
+    # This is a rough estimate based on the largest intermediate result
+    largest_intermediate = max(info.size_dict.values(), default=0)
+    intermediate_mem = largest_intermediate * dtype_size
+    
+    # Total memory usage
+    mem = input_mem + output_mem + intermediate_mem
+
+    return flops, mem
 
 def FunctionFLOPs_linear(result: Tensor, *args, **kwargs) -> int:
     if len(args) == 3:
@@ -417,10 +431,10 @@ def FunctionFLOPs_convnd(result: Tensor, *args, **kwargs) -> int:
 
     return flops_functional_convnd(bias, groups, kernel_size, in_channels, result_shape)
 
-def FunctionFLOPs_leaky_relu(result: Tensor, *args, **kwargs) -> int:
+def cost_leaky_relu(result: Tensor, *args, **kwargs) -> int:
     return result.numel() * 4
 
-def FunctionFLOPs_interpolate(result: Tensor, *args, **kwargs) -> int:
+def cost_interpolate(result: Tensor, *args, **kwargs) -> int:
     input = args[0]
     if len(args) > 1:
         size = args[1]
@@ -450,9 +464,269 @@ def FunctionFLOPs_interpolate(result: Tensor, *args, **kwargs) -> int:
     else:
         flops *= scale_factor**len(input)
 
-    return flops
+    input_mem  = input.numel() * input.element_size()
+    output_mem = result.numel() * result.element_size()
+    
+    mem = input_mem + output_mem
 
-def FunctionFLOPs_silu(result: Tensor, *args, **kwargs) -> int:
+    return flops, mem
+
+def cost_zero(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    return 0, 0
+
+def cost_slice_tensor(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input_tensor = args[0]  # Assuming the first argument is the input tensor
+
+    flops = 0
+
+    input_mem = input_tensor.numel() * input_tensor.element_size()
+    output_mem = result.numel() * result.element_size()
+    
+    mem = input_mem + output_mem
+
+    return flops, mem
+
+def cost_slice_scatter(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input_tensor = args[0]  # Assuming the first argument is the input tensor
+    src = args[1]  # The source tensor containing values to scatter
+    dim = args[2]  # The dimension along which to scatter
+    start = args[3]  # The starting index for scattering
+    end = args[4] if len(args) > 4 else input_tensor.size(dim)  # The end index for scattering
+    step = args[5] if len(args) > 5 else 1  # The step size for scattering
+    
+    # Calculate the number of elements in the slice
+    slice_size = (end - start + step - 1) // step
+    num_elements_slice = slice_size * (src.numel() // src.size(dim))
+    
+    # Number of elements in the input tensor
+    num_elements_input = input_tensor.numel()
+
+    flops = 0
+    
+    # Memory calculation
+    input_dtype_size = input_tensor.element_size()  # Get the size of the input data type in bytes
+    src_dtype_size = src.element_size()  # Get the size of the source data type in bytes
+    
+    # Read the entire input tensor and the source tensor
+    input_mem = num_elements_input * input_dtype_size
+    src_mem = src.numel() * src_dtype_size
+    
+    # Write the updated slice to the output tensor
+    output_mem = num_elements_slice * input_dtype_size
+    
+    mem = input_mem + src_mem + output_mem
+
+    return flops, mem
+
+def cost_cat(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    tensors = args[0]  # Assuming the first argument is a sequence of tensors
+    dim = args[1] if len(args) > 1 else 0  # The dimension along which to concatenate
+    
+    # Total number of elements in all input tensors
+    num_elements_input = sum(tensor.numel() for tensor in tensors)
+    
+    # Number of elements in the output tensor (same as total input elements)
+    num_elements_output = num_elements_input
+
+    flops = 0
+    
+    # Memory calculation
+    input_mem = 0
+    for tensor in tensors:
+        input_mem += tensor.numel() * tensor.element_size()
+    
+    output_dtype_size = result.element_size()  # Get the size of the output data type in bytes
+    
+    # Read all input tensors
+    # Write the output tensor
+    output_mem = num_elements_output * output_dtype_size
+    
+    mem = input_mem + output_mem
+
+    return flops, mem
+
+def cost_broadcast(result: List[Tensor], *args, **kwargs) -> Tuple[int, int]:
+    tensors = args[0]  # Assuming the first argument is a sequence of tensors
+
+    flops = 0
+
+    # Memory calculation
+    input_mem = 0
+    for tensor in tensors:
+        input_mem += tensor.numel() * tensor.element_size()
+
+    mem = input_mem
+
+    return flops, mem
+
+def cost_new(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+
+    dtype = kwargs.get('dtype') if 'dtype' in kwargs else None
+    dims = args[0]  # Assuming the first argument is the input tensor
+    # Read the shape of the input tensor
+    output_mem = _prod(dims) * dtype.itemsize
+
+    flops = 0
+
+    mem = output_mem
+
+    return flops, mem
+
+def cost_like(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+
+    if args[0] is not None:
+        input_tensor = args[0]  # Assuming the first argument is the input tensor
+        # Read the shape of the input tensor (negligible, but we'll include it for completeness)
+        input_mem = input_tensor.numel() * input_tensor.element_size()
+    else:
+        input_mem = 0
+
+    flops = 0
+
+    # Write the output tensor
+    output_mem = result.numel()* result.element_size()
+    
+    mem = input_mem + output_mem
+
+    return flops, mem
+
+def cost_one_hot(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input_tensor = args[0]  # Assuming the first argument is the input tensor
+    num_classes = args[1]  # The number of classes for the one-hot encoding
+    
+    # Number of elements in the input tensor
+    num_elements_input = input_tensor.numel()
+    
+    # Number of elements in the output tensor
+    # This will be the number of input elements multiplied by the number of classes
+    num_elements_output = num_elements_input * num_classes
+
+    flops = 0
+    
+    # Memory calculation
+    input_dtype_size = input_tensor.element_size()  # Get the size of the input data type in bytes
+    output_dtype_size = result.element_size()  # Get the size of the output data type in bytes
+    
+    # Read the input tensor
+    input_mem = num_elements_input * input_dtype_size
+    
+    # Write the one-hot encoded output tensor
+    output_mem = num_elements_output * output_dtype_size
+    
+    mem = input_mem + output_mem
+
+    return flops, mem
+
+def cost_squeeze(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input_tensor = args[0]  # Assuming the first argument is the input tensor
+    dim = args[1] if len(args) > 1 else kwargs.get('dim', None)  # The dimension to squeeze
+    
+    # Number of elements in the input tensor
+    # (which is the same as the number of elements in the output tensor)
+    num_elements = input_tensor.numel()
+
+    flops = 0
+    
+    # Memory calculation
+    dtype_size = input_tensor.element_size()  # Get the size of the data type in bytes
+    
+    # Read the entire input tensor
+    input_mem = num_elements * dtype_size
+    
+    # Write the entire output tensor
+    # (same number of elements, but potentially different shape)
+    output_mem = num_elements * dtype_size
+    
+    mem = input_mem + output_mem
+
+    return flops, mem
+
+def cost_select_int(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input_tensor = args[0]  # Assuming the first argument is the input tensor
+    dim = args[1]  # The dimension along which to select
+    index = args[2]  # The index of the slice to select
+    
+    # Calculate the number of elements in the output tensor
+    output_size = list(input_tensor.size())
+    output_size.pop(dim)  # Remove the dimension we're selecting from
+    num_elements_output = 1
+    for s in output_size:
+        num_elements_output *= s
+    
+    # Number of elements in the input tensor
+    num_elements_input = input_tensor.numel()
+
+    flops = 0
+    
+    # Memory calculation
+    dtype_size = input_tensor.element_size()  # Get the size of the data type in bytes
+    
+    # Read the entire input tensor
+    input_mem = num_elements_input * dtype_size
+    
+    # Write the selected elements to the output
+    output_mem = num_elements_output * dtype_size
+    
+    mem = input_mem + output_mem
+
+    return flops, mem
+
+def cost_index_select(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input_tensor = args[0]  # Assuming the first argument is the input tensor
+    dim = args[1]  # The dimension along which to index
+    index = args[2]  # The indices of elements to select
+    
+    # Number of elements in the index tensor
+    num_indices = index.numel()
+    
+    # Number of elements in the input tensor
+    num_elements_input = input_tensor.numel()
+    
+    # Number of elements in the output tensor
+    # This will be the number of indices multiplied by the size of other dimensions
+    num_elements_output = num_indices * (num_elements_input // input_tensor.size(dim))
+    
+    # FLOPs calculation
+    # We count one operation per selected element for the selection process
+    flops = 0
+    
+    # Memory calculation
+    dtype_size = input_tensor.element_size()  # Get the size of the data type in bytes
+    index_dtype_size = index.element_size()  # Get the size of the index data type
+    
+    # Read the entire input tensor and the index tensor
+    input_mem = num_elements_input * dtype_size + num_indices * index_dtype_size
+    
+    # Write the selected elements to the output
+    output_mem = num_elements_output * dtype_size
+    
+    mem = input_mem + output_mem
+
+    return flops, mem
+
+def cost_index_tensor(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input_tensor = args[0]  # Assuming the first argument is the input tensor
+    index_tensor = args[1][0]  # Assuming the second argument is an index list
+    
+    # Number of elements in the index tensor
+    num_indices = index_tensor.numel()
+    
+    # Number of elements in the input tensor
+    num_elements_input = input_tensor.numel()
+
+    flops = 0
+
+    # Read the entire input tensor and the index tensor
+    input_mem = num_elements_input * input_tensor.element_size() + num_indices * index_tensor.element_size()
+    
+    # Write the selected elements to the output
+    output_mem = num_indices * input_tensor.element_size()
+    
+    mem = input_mem + output_mem
+
+    return flops, mem
+
+def cost_silu(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
     self_obj = args[0]
     
     # Number of elements in the input tensor
@@ -467,11 +741,17 @@ def FunctionFLOPs_silu(result: Tensor, *args, **kwargs) -> int:
     flops_per_silu = flops_per_sigmoid + 1
     
     # Total FLOPs
-    total_flops = num_elements * flops_per_silu
-    
-    return total_flops
+    flops = num_elements * flops_per_silu
 
-def FunctionFLOPs_scatter_add(result: Tensor, *args, **kwargs) -> int:
+    # Memory calculation
+    dtype_size = self_obj.element_size()  # Get the size of the data type in bytes
+    input_mem = num_elements * dtype_size  # Read input tensor
+    output_mem = num_elements * dtype_size  # Write output tensor
+    mem = input_mem + output_mem
+
+    return flops, mem
+
+def cost_scatter_add(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
     self_obj = args[0]
     dim = args[1]
     index = args[2]
@@ -481,182 +761,125 @@ def FunctionFLOPs_scatter_add(result: Tensor, *args, **kwargs) -> int:
     assert index.shape == src.shape, "Index and source tensors must have the same shape"
 
     # Number of elements in the index/source tensor
-    num_elements = index.numel()
+    n = index.numel()
 
-    # Each scatter_add operation involves one addition per element
-    total_flops = num_elements
+    # Number of elements in the result tensor
+    m = result.numel()
 
-    return total_flops
-
-# For MethodFLOPs
-def MethodFLOPs_zero(self_obj: Tensor, result: Tensor, *args_tail, **kwargs) -> int:
-    return flops_zero()
-
-
-def MethodFLOPs_elemwise(self_obj: Tensor, result: Tensor, *args_tail, **kwargs) -> int:
-    return flops_elemwise(result.shape)
-
-
-def MethodFLOPs_sum(self_obj: Tensor, result: Tensor, *args_tail, **kwargs) -> int:
-    this_shape = self_obj.squeeze().shape
-    result_shape = result.squeeze().shape
-
-    total_flops = None
-    if len(result_shape) == 0:
-        total_flops = self_obj.numel() - 1
-    else:
-        kept_shape = list(this_shape)
-        for s in result_shape:
-            kept_shape.remove(s)
-        kept_shape = Size(kept_shape)
-        total_flops = kept_shape.numel() * (result_shape.numel() - 1)
-
-    return total_flops
-
-
-def MethodFLOPs_softmax(self_obj: Tensor, result: Tensor, *args_tail, **kwargs) -> int:
-    this_shape = self_obj.shape
-    result_shape = result.shape
-    assert this_shape == result_shape
-
-    exp_flops = flops_elemwise(this_shape)
-
-    dim_reduce: int = args_tail[0] if args_tail else kwargs.get('dim')
-    dims_kept = list(this_shape)
-    dims_kept.pop(dim_reduce)
-    dims_kept = Size(dims_kept)
-    sum_flops = (this_shape[dim_reduce] - 1) * dims_kept.numel()
-
-    div_flops = flops_elemwise(this_shape)
-
-    total_flops = exp_flops + sum_flops + div_flops
-    return total_flops
+    # FLOPs: n (where n is the number of elements in index/src tensor)
+    # Memory: 3n + m (where m is the number of elements in the result tensor)
     
+    # FLOPs calculation
+    flops = n  # One addition per element in index/src tensor
+
+    # Memory calculation
+    dtype_size = result.element_size()  # Get the size of the data type in bytes
+    input_mem = (m + n + n) * dtype_size  # Read result, index, and src tensors
+    output_mem = n * dtype_size  # Write to result tensor (only scattered elements)
+    mem = input_mem + output_mem
+
+    return flops, mem
 
 
-MODULE_FLOPs_MAPPING = {
-    'Linear': ModuleFLOPs_Linear,
-    'Identity': ModuleFLOPs_zero,
-    'Conv1d': ModuleFLOPs_ConvNd,
-    'Conv2d': ModuleFLOPs_ConvNd,
-    'Conv3d': ModuleFLOPs_ConvNd,
-    'AvgPool1d': ModuleFLOPs_AvgPoolNd,
-    'AvgPool2d': ModuleFLOPs_AvgPoolNd,
-    'AvgPool3d': ModuleFLOPs_AvgPoolNd,
-    'AdaptiveAvgPool1d': ModuleFLOPs_AdaptiveAvgPoolNd,
-    'AdaptiveAvgPool2d': ModuleFLOPs_AdaptiveAvgPoolNd,
-    'AdaptiveAvgPool3d': ModuleFLOPs_AdaptiveAvgPoolNd,
-    'MaxPool1d': ModuleFLOPs_MaxPoolNd,
-    'MaxPool2d': ModuleFLOPs_MaxPoolNd,
-    'MaxPool3d': ModuleFLOPs_MaxPoolNd,
-    'AdaptiveMaxPool1d': ModuleFLOPs_AdaptiveMaxPoolNd,
-    'AdaptiveMaxPool2d': ModuleFLOPs_AdaptiveMaxPoolNd,
-    'AdaptiveMaxPool3d': ModuleFLOPs_AdaptiveMaxPoolNd,
-    'LayerNorm': ModuleFLOPs_Norm,
-    'BatchNorm1d': ModuleFLOPs_Norm,
-    'BatchNorm2d': ModuleFLOPs_Norm,
-    'BatchNorm3d': ModuleFLOPs_Norm,
-    'InstanceNorm1d': ModuleFLOPs_Norm,
-    'InstanceNorm2d': ModuleFLOPs_Norm,
-    'InstanceNorm3d': ModuleFLOPs_Norm,
-    'GroupNorm': ModuleFLOPs_Norm,
-    'Dropout': ModuleFLOPs_zero,
-    'GELU': ModuleFLOPs_GELU,
-    'ReLU': ModuleFLOPs_elemwise,
-    'Flatten': ModuleFLOPs_zero,
-    'LeakyReLU': ModuleFLOPs_LeakyReLU,
-    'type_as': ModuleFLOPs_zero
+FUNCTION_COST_MAPPING = {
+    'detach.default': cost_like,
+    'empty.memory_format': cost_zero,
+    'scatter_add.default': cost_scatter_add,
+    'scatter_add_.default': cost_scatter_add,
+    'silu.default': cost_silu,
+    'index.Tensor': cost_index_tensor,
+    'slice.Tensor': cost_like,
+    'unsqueeze.default': cost_squeeze,
+    'squeeze.dim': cost_squeeze,
+    'index_select.default': cost_index_select,
+    'select.int': cost_select_int,
+    'one_hot.default': cost_one_hot,
+    'ones_like.default': cost_like,
+    'ones_like': cost_like,
+    'zeros.default': cost_new,
+    'new_zeros.default': cost_like,
+    'scatter_.value': cost_like,
+    'slice_scatter.default': cost_slice_scatter,
+    '_to_copy.default': cost_like,
+    'copy.default': cost_like,
+    'copy_.default': cost_like,
+    'concat': cost_cat,
+    'cat': cost_cat,
+    'cat.default': cost_cat,
+    'clone.default': cost_like,
+    'stack.default': cost_cat,
+    'stack': cost_cat,
+    '_unsafe_view.default': cost_zero,
+    'view.default': cost_zero,
+    'permute.default': cost_zero,
+    'tensordot.default': cost_tensordot,
+    'tensordot': cost_tensordot,
+    'broadcast_tensors.default': cost_broadcast,
+    'linalg_norm.default': cost_linalg_norm,
+    'linalg_vector_norm.default': cost_linalg_vector_norm,
+    'normalize': cost_normalize,
+    'getattr': cost_zero,
+    'getitem': cost_zero,
+    'clamp_min.default': cost_elemwise,
+    'einsum.default': cost_einsum,
+    'einsum': cost_einsum,
+    'lt.Scalar': cost_elemwise,
+    'sin.default': cost_elemwise,
+    'tanh.default': cost_elemwise,
+    'expand.default': cost_like,
+    'pow.Tensor_Scalar': cost_elemwise,
+    'div.Tensor': cost_elemwise,
+    'add.Tensor': cost_elemwise,
+    'rsub.Scalar': cost_elemwise,
+    'sub.Scalar': cost_elemwise,
+    'sub.Tensor': cost_elemwise,
+    'mul.Tensor': cost_elemwise,
+    'mul': cost_elemwise,
+    'truediv': cost_elemwise,
+    'sub': cost_elemwise,
+    'bmm.default': cost_matmul,
+    'mm.default': cost_matmul,
+    'matmul.default': cost_matmul,
+    'matmul': cost_matmul,
+    'sum.dim_IntList': cost_sum,
+    'add': cost_elemwise,
+    '_assert': cost_zero,
+    'eq': cost_elemwise,
+    # 'linear.default': FunctionFLOPs_linear,
+    # 'linear': FunctionFLOPs_linear,
+    # 'conv1d': FunctionFLOPs_convnd,
+    # 'conv2d': FunctionFLOPs_convnd,
+    # 'conv3d': FunctionFLOPs_convnd,
+    # 'leaky_relu': FunctionFLOPs_leaky_relu,
+    # 'pad': FunctionFLOPs_zero,
+    # 'floordiv': FunctionFLOPs_zero,
+    # 'flip': FunctionFLOPs_zero,
+    'interpolate': cost_interpolate,
 }
-FUNCTION_FLOPs_MAPPING = {
-    'scatter_add.default': FunctionFLOPs_scatter_add,
-    'silu.default': FunctionFLOPs_silu,
-    'index.Tensor': FunctionFLOPs_zero,
-    'unsqueeze.default': FunctionFLOPs_zero,
-    'squeeze.dim': FunctionFLOPs_zero,
-    'index_select.default': FunctionFLOPs_zero,
-    'select.int': FunctionFLOPs_zero,
-    'one_hot.default': FunctionFLOPs_zero,
-    'ones_like.default': FunctionFLOPs_zero,
-    'new_zeros.default': FunctionFLOPs_zero,
-    'slice_scatter.default': FunctionFLOPs_zero,
-    '_to_copy.default': FunctionFLOPs_zero,
-    'copy.default': FunctionFLOPs_zero,
-    'slice.Tensor': FunctionFLOPs_zero,
-    'cat.default': FunctionFLOPs_zero,
-    'clone.default': FunctionFLOPs_zero,
-    '_unsafe_view.default': FunctionFLOPs_zero,
-    'view.default': FunctionFLOPs_zero,
-    'permute.default': FunctionFLOPs_zero,
-    'tensordot.default': FunctionFLOPs_tensordot,
-    'tensordot': FunctionFLOPs_tensordot,
-    'stack.default': FunctionFLOPs_zero,
-    'stack': FunctionFLOPs_zero,
-    'ones_like': FunctionFLOPs_zero,
-    'broadcast_tensors.default': FunctionFLOPs_zero,
-    'linalg_norm.default': FunctionFLOPS_linalg_norm,
-    'linalg_vector_norm.default': FunctionFLOPS_linalg_vector_norm,
-    'normalize': FunctionFLOPs_normalize,
-    'getattr': FunctionFLOPs_zero,
-    'getitem': FunctionFLOPs_zero,
-    'clamp_min.default': FunctionFLOPs_elemwise,
-    'einsum.default': FunctionFLOPs_einsum,
-    'einsum': FunctionFLOPs_einsum,
-    'lt.Scalar': FunctionFLOPs_elemwise,
-    'sin.default': FunctionFLOPs_trig,
-    'tanh.default': FunctionFLOPs_trig,
-    'expand.default': FunctionFLOPs_zero,
-    'pow.Tensor_Scalar': FunctionFLOPs_elemwise,
-    'div.Tensor': FunctionFLOPs_elemwise,
-    'add.Tensor': FunctionFLOPs_elemwise,
-    'rsub.Scalar': FunctionFLOPs_elemwise,
-    'sub.Scalar': FunctionFLOPs_elemwise,
-    'sub.Tensor': FunctionFLOPs_elemwise,
-    'mul.Tensor': FunctionFLOPs_elemwise,
-    'mul': FunctionFLOPs_elemwise,
-    'truediv': FunctionFLOPs_elemwise,
-    'sub': FunctionFLOPs_elemwise,
-    'matmul.default': FunctionFLOPs_matmul,
-    'matmul': FunctionFLOPs_matmul,
-    'sum.dim_IntList': FunctionFLOPs_sum,
-    'add': FunctionFLOPs_elemwise,
-    'concat': FunctionFLOPs_zero,
-    '_assert': FunctionFLOPs_zero,
-    'eq': FunctionFLOPs_elemwise,
-    'cat': FunctionFLOPs_zero,
-    'linear.default': FunctionFLOPs_linear,
-    'linear': FunctionFLOPs_linear,
-    'conv1d': FunctionFLOPs_convnd,
-    'conv2d': FunctionFLOPs_convnd,
-    'conv3d': FunctionFLOPs_convnd,
-    'leaky_relu': FunctionFLOPs_leaky_relu,
-    'pad': FunctionFLOPs_zero,
-    'floordiv': FunctionFLOPs_zero,
-    'flip': FunctionFLOPs_zero,
-    'interpolate': FunctionFLOPs_interpolate,
-}
-METHOD_FLOPs_MAPPING = {
-    'narrow': MethodFLOPs_zero,
-    '__setitem__': MethodFLOPs_zero,
-    'reshape': MethodFLOPs_zero,
-    'permute': MethodFLOPs_zero,
-    'unbind': MethodFLOPs_zero,
-    'transpose': MethodFLOPs_zero,
-    'repeat': MethodFLOPs_zero,
-    'unsqueeze': MethodFLOPs_zero,
-    'exp': MethodFLOPs_elemwise,
-    'sum': MethodFLOPs_sum,
-    'div': MethodFLOPs_elemwise,
-    'softmax': MethodFLOPs_softmax,
-    'expand': MethodFLOPs_zero,
-    'flatten': MethodFLOPs_zero,
-    'view': MethodFLOPs_zero,
-    'cuda': MethodFLOPs_zero,
-    'flip': MethodFLOPs_zero,
-    'type_as': MethodFLOPs_zero,
-    'size': MethodFLOPs_zero,
-    'clone': MethodFLOPs_zero,
-    'new_empty': MethodFLOPs_zero,
-    'normal_': MethodFLOPs_zero,
-    'add_': MethodFLOPs_elemwise,
-    'pow': MethodFLOPs_zero,
-}
+
+# METHOD_COST_MAPPING = {
+#     'narrow': MethodFLOPs_zero,
+#     '__setitem__': MethodFLOPs_zero,
+#     'reshape': MethodFLOPs_zero,
+#     'permute': MethodFLOPs_zero,
+#     'unbind': MethodFLOPs_zero,
+#     'transpose': MethodFLOPs_zero,
+#     'repeat': MethodFLOPs_zero,
+#     'unsqueeze': MethodFLOPs_zero,
+#     'exp': MethodFLOPs_elemwise,
+#     'sum': MethodFLOPs_sum,
+#     'div': MethodFLOPs_elemwise,
+#     'softmax': MethodFLOPs_softmax,
+#     'expand': MethodFLOPs_zero,
+#     'flatten': MethodFLOPs_zero,
+#     'view': MethodFLOPs_zero,
+#     'cuda': MethodFLOPs_zero,
+#     'flip': MethodFLOPs_zero,
+#     'type_as': MethodFLOPs_zero,
+#     'size': MethodFLOPs_zero,
+#     'clone': MethodFLOPs_zero,
+#     'new_empty': MethodFLOPs_zero,
+#     'normal_': MethodFLOPs_zero,
+#     'add_': MethodFLOPs_elemwise,
+#     'pow': MethodFLOPs_zero,
+# }

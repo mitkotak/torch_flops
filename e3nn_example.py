@@ -6,7 +6,7 @@ from e3nn import o3, nn
 e3nn.set_optimization_defaults(jit_script_fx=False)
 
 device=torch.device('cuda')
-layer = 'full_tp'
+layer = "mlp_linear"
 
 if layer == 'mlp_linear':
     x = torch.randn(3)
@@ -54,15 +54,15 @@ flops_counter.propagate(*args)
 
 result_table = flops_counter.print_result_table()
 # Print FLOPs, execution time and max GPU memory.
-for lmax in range(1, 9):
-    irreps =  o3.Irreps.spherical_harmonics(lmax)
-    x = irreps.randn(-1)
-    model = o3.FullTensorProduct(irreps, irreps)
-    args = (x,x)
-    flops_counter = TorchFLOPsByFX(model, args) # Currently harcoding cuda
-    flops_counter.propagate(*args)
-    total_flops = flops_counter.print_total_flops(show=False)
-    print(f"lmax {lmax}", total_flops)
+# for lmax in range(1, 9):
+#     irreps =  o3.Irreps.spherical_harmonics(lmax)
+#     x = irreps.randn(-1)
+#     model = o3.FullTensorProduct(irreps, irreps)
+#     args = (x,x)
+#     flops_counter = TorchFLOPsByFX(model, args) # Currently harcoding cuda
+#     flops_counter.propagate(*args)
+#     total_flops = flops_counter.print_total_flops(show=False)
+#     print(f"lmax {lmax}", total_flops)
 # total_time = flops_counter.print_total_time()
 # max_memory = flops_counter.print_max_memory()
 
