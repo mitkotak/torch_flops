@@ -823,6 +823,7 @@ FUNCTION_COST_MAPPING = {
     'clamp_min.default': cost_elemwise,
     'einsum.default': cost_einsum,
     'einsum': cost_einsum,
+    'mul.Scalar': cost_elemwise,
     'lt.Scalar': cost_elemwise,
     'sin.default': cost_elemwise,
     'tanh.default': cost_elemwise,

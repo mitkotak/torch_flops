@@ -6,6 +6,9 @@ from e3nn import o3, nn
 e3nn.set_optimization_defaults(jit_script_fx=False)
 
 device=torch.device('cuda')
+system = {'peak_bandwidth': 768e9,
+         'peak_flops': 17.01e12}
+
 layer = "mlp_linear"
 
 if layer == 'mlp_linear':
@@ -49,7 +52,7 @@ import torch
 from torch import nn, Tensor
 from torch_flops.flops_engine import TorchFLOPsByFX
 
-flops_counter = TorchFLOPsByFX(model, args) # Currently harcoding cuda
+flops_counter = TorchFLOPsByFX(system, model, args) # Currently harcoding cuda
 flops_counter.propagate(*args)
 
 result_table = flops_counter.print_result_table()

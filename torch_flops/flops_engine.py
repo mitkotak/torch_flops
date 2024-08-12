@@ -275,7 +275,7 @@ class ShapeProp(torch.fx.Interpreter):
 
 
 class TorchFLOPsByFX():
-    def __init__(self, model: nn.Module, args: Tuple[Any, ...], ignore_ops: Sequence[str] = []):
+    def __init__(self, system: Dict, model: nn.Module, args: Tuple[Any, ...], ignore_ops: Sequence[str] = []):
         '''
         model: the model.
         ignore_ops: the operations to be ignored for counting FLOPs.
@@ -296,6 +296,7 @@ class TorchFLOPsByFX():
             ignore_ops = [ignore_ops]
         self.ignore_ops = deepcopy(ignore_ops)
 
+        self.system = system
         self.result_table = []
         self.result_header = ['node_name', 'node_op', 'op_target', 'flops', 'time(ms)', 'mem(bytes)']
         self.__missing_values = [''] * 4 + ['ERROR']
@@ -423,8 +424,8 @@ class TorchFLOPsByFX():
         if not self.__flag_propagated:
             raise RuntimeError(f"Use `propagate()` method first.")
         
-        peak_bandwidth = 768 * 1e9 # hardcoding RTX A5500
-        peak_flops = 17.01 * 1e12
+        peak_bandwidth = self.system['peak_bandwidth']
+        peak_flops = self.system['peak_flops']
         
         t_mem = self.total_memory / peak_bandwidth
         t_flops = self.total_flops / peak_flops
