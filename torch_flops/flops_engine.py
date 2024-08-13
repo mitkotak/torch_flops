@@ -7,7 +7,7 @@ from torch.fx._compatibility import compatibility
 from torch.fx.graph_module import GraphModule
 import traceback
 from tabulate import tabulate
-from typing import Any, Tuple, NamedTuple, Optional, Dict, Sequence, Literal
+from typing import Any, Tuple, NamedTuple, Optional, Dict, Sequence, Literal, List
 from copy import deepcopy
 import time
 import csv
@@ -283,7 +283,8 @@ class TorchFLOPsByFX():
         model.eval()
         try:
             from torch.fx.experimental.proxy_tensor import make_fx
-            self.graph_model: GraphModule = make_fx(model)(*args)
+            es = torch.export.export(model, args)
+            self.graph_model: GraphModule = make_fx(es.module())(*args)
         except torch.fx.proxy.TraceError as e:
             print("\033[33mNOTE: The model cannot be built as a graph model by 'symbolic_trace()'. Please remove the `assert`, `if` and `for` operations. " +
                   "See 'https://pytorch.org/docs/stable/fx.html#limitations-of-symbolic-tracing' for more instructions.\033[0m")
@@ -357,7 +358,7 @@ class TorchFLOPsByFX():
         self.result_table = result_table
         self.__flag_propagated = True
 
-    def print_result_table(self, show: bool = True) -> list[list[str | int | float]]:
+    def print_result_table(self, show: bool = True):
         '''
         Print the full result table.
         return: the results in a 2D list (excluding the head of the table).

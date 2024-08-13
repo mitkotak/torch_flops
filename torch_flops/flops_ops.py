@@ -17,14 +17,34 @@ def cost_elemwise(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
 
     # FLOPs: n
     # Memory: 2*n
-    flops = result.numel()
+    
+    if not isinstance(result, Tensor):
+        num_elements = 1
+        dtype_size = Tensor([result]).element_size()
+    else:
+        num_elements = result.numel()
+        dtype_size = result.element_size()
+        
+    flops = num_elements
 
     # Assuming both inputs have same dtype
-    output_mem = result.numel() * result.element_size()
+    output_mem = num_elements * dtype_size
     mem = input_mem + output_mem
 
     return flops, mem
 
+
+def cost_addmatmul(result: Tensor, *args, **kwargs):
+    assert len(args) == 3, len(args)
+    input, tensor_A, tensor_B = args
+    
+    flops, mem = cost_matmul(result, tensor_A, tensor_B)
+    
+    flops += input.numel() * _prod(input.shape)
+    mem += input.element_size() * _prod(input.shape)
+    
+    return flops, mem
+    
 def cost_matmul(result: Tensor, *args, **kwargs):
     
     assert len(args) == 2, len(args)
@@ -122,7 +142,7 @@ def cost_sum(result: Tensor, *args, **kwargs) -> int:
     result_shape = result.shape
     
     dim = args[1]
-    keep_dim = args[2]
+    keep_dim = args[2] if len(args) > 3 else False
     input_elements = self_obj.numel()
     total_flops = None
     if dim is None:
@@ -560,11 +580,8 @@ def cost_broadcast(result: List[Tensor], *args, **kwargs) -> Tuple[int, int]:
     return flops, mem
 
 def cost_new(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
-
-    dtype = kwargs.get('dtype') if 'dtype' in kwargs else None
-    dims = args[0]  # Assuming the first argument is the input tensor
     # Read the shape of the input tensor
-    output_mem = _prod(dims) * dtype.itemsize
+    output_mem = result.numel() * result.element_size()
 
     flops = 0
 
@@ -804,6 +821,9 @@ def cost_scatter_add(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
 
 
 FUNCTION_COST_MAPPING = {
+    'sym_size': cost_zero,
+    'transpose.int': cost_zero,
+    't.default': cost_zero,
     'detach.default': cost_like,
     'empty.memory_format': cost_zero,
     'scatter_add.default': cost_scatter_add,
@@ -847,6 +867,7 @@ FUNCTION_COST_MAPPING = {
     'einsum': cost_einsum,
     'mul.Scalar': cost_elemwise,
     'lt.Scalar': cost_elemwise,
+    'cos.default': cost_elemwise,
     'sin.default': cost_elemwise,
     'tanh.default': cost_elemwise,
     'expand.default': cost_like,
@@ -860,6 +881,7 @@ FUNCTION_COST_MAPPING = {
     'mul': cost_elemwise,
     'truediv': cost_elemwise,
     'sub': cost_elemwise,
+    'addmm.default': cost_addmatmul,
     'bmm.default': cost_matmul,
     'mm.default': cost_matmul,
     'matmul.default': cost_matmul,
