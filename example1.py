@@ -8,8 +8,11 @@ import warnings
 warnings.filterwarnings('ignore')
 from typing import Literal
 import argparse
-
+from torch._inductor.utils import print_performance
 from torch_flops import TorchFLOPsByFX
+
+system = {'peak_bandwidth': 768e9,
+         'peak_flops': 17.01e12}
 
 '''
 Count the FLOPs of ViT-B16 and ResNet-50.
@@ -36,7 +39,7 @@ if __name__ == "__main__":
 
         with torch.no_grad():
             # Build the graph of the model. You can specify the operations (listed in `MODULE_FLOPs_MAPPING`, `FUNCTION_FLOPs_MAPPING` and `METHOD_FLOPs_MAPPING` in 'flops_ops.py') to ignore.
-            flops_counter = TorchFLOPsByFX(vit)
+            flops_counter = TorchFLOPsByFX(system, vit, (x,))
             # # Print the grath (not essential)
             # print('*' * 120)
             # flops_counter.graph_model.graph.print_tabular()
@@ -47,8 +50,10 @@ if __name__ == "__main__":
         result_table = flops_counter.print_result_table()
         # # Print the total FLOPs
         total_flops = flops_counter.print_total_flops(show=True)
-        total_time = flops_counter.print_total_time()
-        max_memory = flops_counter.print_max_memory()
+        total_memory = flops_counter.print_max_memory(show=True)
+        analytical_time, intensity = flops_counter.print_analytical_total_time(show=True)
+        
+        print(f"{print_performance(lambda: vit(x))*1000} ms")
     elif model_arch == 'resnet50':
         print("=" * 10, "resnet50", "=" * 10)
         resnet = timm.create_model('resnet50').to(device)
@@ -58,9 +63,11 @@ if __name__ == "__main__":
             resnet(x)
 
         with torch.no_grad():
-            flops_counter = TorchFLOPsByFX(resnet)
+            flops_counter = TorchFLOPsByFX(system, resnet, (x,))
             flops_counter.propagate(x)
         result_table = flops_counter.print_result_table()
         total_flops = flops_counter.print_total_flops(show=True)
-        total_time = flops_counter.print_total_time()
-        max_memory = flops_counter.print_max_memory()
+        total_memory = flops_counter.print_max_memory(show=False)
+        analytical_time, intensity = flops_counter.print_analytical_total_time(show=True)
+
+        print(f"{print_performance(lambda: resnet(x), )*1000} ms")
