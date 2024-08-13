@@ -5,6 +5,27 @@ from typing import Tuple, List, Union
 
 __all__ = ['FUNCTION_COST_MAPPING']
 
+def cost_mean(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input = args[0]
+    input_size = input.numel()
+    input_mem = input_size * input.element_size()
+    
+    if not isinstance(result, Tensor):
+        num_elements = 1
+        dtype_size = Tensor([result]).element_size()
+    else:
+        num_elements = result.numel()
+        dtype_size = result.element_size()
+    
+    # FLOPs: 2 * input_size (one add, one divide per input element)
+    flops = 2 * input_size
+    
+    # Memory: input_size + output_size
+    output_mem = num_elements * dtype_size
+    mem = input_mem + output_mem
+    
+    return flops, mem
+
 def cost_elemwise(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
     input1 = args[0]
     input1 = Tensor([input1]) if not isinstance(input1, Tensor) else input1
@@ -64,19 +85,6 @@ def cost_matmul(result: Tensor, *args, **kwargs):
 
     return flops, mem
 
-# For nn.modules.*
-def cost_functional_1d(module: nn.modules.conv._ConvNd, input_shape: Size, result_shape: Size, dtype_size: int=4) -> Tuple[int, int]:
-    kernel_size = Size([__k]) if isinstance(__k := module.kernel_size, int) else Size(__k)
-    flops = (2 * kernel_size.numel() * module.in_channels - int(module.bias is None) * module.groups) * result_shape.numel()
-    
-    input_mem = input_shape.numel() * dtype_size
-    weight_mem = module.weight.numel() * dtype_size
-    bias_mem = module.out_channels * dtype_size if module.bias is not None else 0
-    output_mem = result_shape.numel() * dtype_size
-    mem = input_mem + weight_mem + bias_mem + output_mem
-    
-    return flops, mem
-
 
 def cost_avgpoolnd(module: nn.modules.pooling._AvgPoolNd, input_shape: Size, result_shape: Size, dtype_size: int = 4) -> int:
     kernel_size = Size([__k]) if isinstance(__k := module.kernel_size, int) else Size(__k)
@@ -103,24 +111,31 @@ def cost_adaptive_avgpoolnd(module: nn.modules.pooling._AdaptiveAvgPoolNd, input
     
     return flops, mem
 
-def cost_maxpoolnd(module: nn.modules.pooling._MaxPoolNd, input_shape: Size, result_shape: Size, dtype_size: int = 4) -> Tuple[int, int]:
-    kernel_size = Size([__k]) if isinstance(__k := module.kernel_size, int) else Size(__k)
+def cost_maxpoolnd(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input = args[0]
     
-    flops = (kernel_size.numel() - 1) * result_shape.numel()
-    
-    input_mem = np.prod(input_shape) * dtype_size
-    output_mem = np.prod(result_shape) * dtype_size
-    mem = input_mem + output_mem
+    assert isinstance(input, Tensor)
+
+    kernel_size = args[1]
+    stride = args[2]
+
+    if stride is None:
+        stride = kernel_size
+
+    kernel_size = Size([kernel_size, kernel_size]) if isinstance(kernel_size, int) else Size(kernel_size)
+
+    input_shape = input.shape
+    result_shape = result[0].shape  # result is a tuple (output, indices)
+
+    # FLOPs: (kernel_size.numel() - 1) comparisons per output element
+    flops = (kernel_size.numel() - 1) * result[0].numel()
+
+    input_mem = input.numel() * input.element_size()
+    output_mem = result[0].numel() * result[0].element_size()
+    indices_mem = result[1].numel() * result[1].element_size()
+    mem = input_mem + output_mem + indices_mem
 
     return flops, mem
-
-def flops_adaptive_maxpoolnd(module: nn.modules.pooling._AdaptiveMaxPoolNd, input_shape: Size, result_shape: Size) -> int:
-    kernel_size = Size(
-        i_size // o_size if (i_size % o_size) == 0 else i_size - o_size * (i_size // o_size) + 1
-        for i_size, o_size in zip(input_shape[2:], result_shape[2:])
-    )
-    return (kernel_size.numel() - 1) * result_shape.numel()
-
 
 def cost_adaptive_maxpoolnd(module: nn.modules.pooling._AdaptiveMaxPoolNd, input_shape: Size, result_shape: Size, dtype_size: int = 4) -> Tuple[int, int]:
     kernel_size = Size(
@@ -282,22 +297,7 @@ def cost_linalg_vector_norm(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
     mem = input_mem + output_mem + intermediate_mem
 
     return flops, mem
-    
-def FunctionFLOPs_normalize(result: Tensor, *args, **kwargs) -> int:
-    assert len(args) == 1, len(args)
-    input_tensor = args[0]
-    assert isinstance(input_tensor, Tensor)
 
-    p = kwargs.get('p', 2)
-    dim = kwargs.get('dim', 1)
-
-    input_shape = input_tensor.shape
-    n = input_shape[0]  # number of samples
-    d = input_shape[1] if len(input_shape) > 1 else 1  # dimensionality of each sample
-    
-    # FLOPs for sum of squares, square root, and division
-    total_flops = 2 * n * d + 1
-    return total_flops
 
 def cost_normalize(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
     input_tensor = args[0]  # Assuming the first argument is the input tensor
@@ -405,7 +405,7 @@ def cost_einsum(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
 
     return flops, mem
 
-def FunctionFLOPs_linear(result: Tensor, *args, **kwargs) -> int:
+def cost_linear(result: Tensor, *args, **kwargs) -> int:
     if len(args) == 3:
         input, weight, bias = args
     elif len(args) == 2:
@@ -424,8 +424,7 @@ def FunctionFLOPs_linear(result: Tensor, *args, **kwargs) -> int:
     return total_flops 
 
 
-def FunctionFLOPs_convnd(result: Tensor, *args, **kwargs) -> int:
-    
+def cost_convnd(result: Tensor, *args, **kwargs) -> int:
     input = args[0]
     if len(args) > 1:
         weight = args[1]
@@ -437,6 +436,7 @@ def FunctionFLOPs_convnd(result: Tensor, *args, **kwargs) -> int:
 
     kernel_size = weight.shape[2:]
     in_channels = weight.shape[1]
+    out_channels = weight.shape[0]
     bias = kwargs.get('bias')
     groups = kwargs.get('groups', None)
     if groups is None:
@@ -448,8 +448,88 @@ def FunctionFLOPs_convnd(result: Tensor, *args, **kwargs) -> int:
     if padding is None:
         padding = 0
     result_shape = result.shape
+    
+    kernel_size = Size([__k]) if isinstance(__k := kernel_size, int) else Size(__k)
+    flops = (2 * kernel_size.numel() * in_channels - int(bias is None) * groups) * result_shape.numel()
+    
+    input_mem = input.shape.numel() * input.element_size()
+    weight_mem = weight.numel() * weight.element_size()
+    bias_mem = out_channels * bias.element_size() if bias is not None else 0
+    output_mem = result.shape.numel() * result.element_size()
+    mem = input_mem + weight_mem + bias_mem + output_mem
+    
+    return flops, mem
 
-    return flops_functional_convnd(bias, groups, kernel_size, in_channels, result_shape)
+def cost_bn(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    
+    result = list(filter(lambda x: len(x) is not 0, result))[0] # Filterting out nulls
+    input = args[0]
+    weight = args[1]
+    bias = args[2]
+    running_mean = args[3]
+    running_var = args[4]
+
+    assert isinstance(result, Tensor)
+    assert isinstance(input, Tensor)
+    assert isinstance(weight, Tensor)
+    assert isinstance(bias, Tensor)
+    assert isinstance(running_mean, Tensor)
+    assert isinstance(running_var, Tensor)
+
+    training = kwargs.get('training', True)
+    exponential_average_factor = kwargs.get('exponential_average_factor', 0.1)
+    epsilon = kwargs.get('epsilon', 1e-5)
+
+    input_size = input.numel()
+    
+    # FLOPs: 8 * input_size (approximate)
+    # This includes operations for mean, variance, normalization, and scaling/shifting
+    flops = 8 * input_size
+    
+    input_mem = input.numel() * input.element_size()
+    output_mem = result.numel() * result.element_size()
+    weight_mem = weight.numel() * weight.element_size()
+    bias_mem = bias.numel() * bias.element_size()
+    running_mean_mem = running_mean.numel() * running_mean.element_size()
+    running_var_mem = running_var.numel() * running_var.element_size()
+    
+    mem = input_mem + output_mem + weight_mem + bias_mem + running_mean_mem + running_var_mem
+    
+    return flops, mem
+
+def cost_ln(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input = args[0]
+    normalized_shape = args[1]
+    weight = args[2] if len(args) > 2 else kwargs.get('weight')
+    bias = args[3] if len(args) > 3 else kwargs.get('bias')
+
+    assert isinstance(input, Tensor)
+    
+    eps = kwargs.get('eps', 1e-5)
+
+    input_size = input.numel()
+    normalized_size = _prod(normalized_shape)
+    batch_size = input_size // normalized_size
+
+    # FLOPs:
+    # 1. Compute mean: input_size additions, batch_size divisions
+    # 2. Compute variance: 2 * input_size (subtraction and square) + input_size (sum) + batch_size (division)
+    # 3. Normalize: 3 * input_size (subtraction, division, multiplication)
+    # 4. Scale and shift (if weight and bias are provided): 2 * input_size
+    flops = 7 * input_size + 2 * batch_size
+    if weight is not None and bias is not None:
+        flops += 2 * input_size
+
+    # Memory:
+    # Input, output, mean, invstd
+    mem = input_size * input.element_size() * 4
+    
+    if weight is not None:
+        mem += normalized_size * weight.element_size()
+    if bias is not None:
+        mem += normalized_size * bias.element_size()
+
+    return flops, mem
 
 def cost_leaky_relu(result: Tensor, *args, **kwargs) -> int:
     return result.numel() * 4
@@ -743,6 +823,28 @@ def cost_index_tensor(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
 
     return flops, mem
 
+def cost_gelu(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    self_obj = args[0]
+    
+    # Number of elements in the input tensor
+    num_elements = self_obj.numel()
+    
+    # FLOPs for GELU calculation per element:
+    # GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    # This involves several operations per element
+    flops_per_gelu = 15  # Approximation of FLOPs for GELU calculation
+    
+    # Total FLOPs
+    flops = num_elements * flops_per_gelu
+
+    # Memory calculation
+    dtype_size = self_obj.element_size()  # Get the size of the data type in bytes
+    input_mem = num_elements * dtype_size  # Read input tensor
+    output_mem = num_elements * dtype_size  # Write output tensor
+    mem = input_mem + output_mem
+
+    return flops, mem
+
 def cost_silu(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
     self_obj = args[0]
     
@@ -768,7 +870,7 @@ def cost_silu(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
 
     return flops, mem
 
-def cost_silu(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+def cost_sigmoid(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
     self_obj = args[0]
     
     # Number of elements in the input tensor
@@ -789,6 +891,33 @@ def cost_silu(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
     mem = input_mem + output_mem
 
     return flops, mem
+
+def cost_softmax(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    input = args[0]
+    dim = args[1] if len(args) > 1 else kwargs.get('dim', -1)
+
+    assert isinstance(input, Tensor)
+    assert isinstance(result, Tensor)
+    assert input.shape == result.shape
+
+    input_shape = input.shape
+    
+    # FLOPs calculation
+    exp_flops = input.numel()  # exponential for each element
+    sum_flops = (input_shape[dim] - 1) * (input.numel() // input_shape[dim])  # sum along dim
+    div_flops = input.numel()  # division for each element
+    
+    total_flops = exp_flops + sum_flops + div_flops
+
+    # Memory calculation
+    input_mem = input.numel() * input.element_size()
+    output_mem = result.numel() * result.element_size()
+    # Accounting for potential temporary storage for exp and sum results
+    temp_mem = input.numel() * input.element_size() * 2
+    
+    total_mem = input_mem + output_mem + temp_mem
+
+    return total_flops, total_mem
 
 def cost_scatter_add(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
     self_obj = args[0]
@@ -821,6 +950,7 @@ def cost_scatter_add(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
 
 
 FUNCTION_COST_MAPPING = {
+    'unbind.int': cost_zero,
     'sym_size': cost_zero,
     'transpose.int': cost_zero,
     't.default': cost_zero,
@@ -873,6 +1003,7 @@ FUNCTION_COST_MAPPING = {
     'expand.default': cost_like,
     'pow.Tensor_Scalar': cost_elemwise,
     'div.Tensor': cost_elemwise,
+    'add_.Tensor': cost_elemwise,
     'add.Tensor': cost_elemwise,
     'rsub.Scalar': cost_elemwise,
     'sub.Scalar': cost_elemwise,
@@ -886,17 +1017,28 @@ FUNCTION_COST_MAPPING = {
     'mm.default': cost_matmul,
     'matmul.default': cost_matmul,
     'matmul': cost_matmul,
+    'convolution.default': cost_convnd,
+    'native_layer_norm.default': cost_ln,
+    'cudnn_batch_norm.default': cost_bn,
     'sum.dim_IntList': cost_sum,
     'add': cost_elemwise,
     '_assert': cost_zero,
     'eq': cost_elemwise,
     'rsqrt.default': cost_elemwise,
-    'sigmoid.default': cost_elemwise,
+    'sigmoid.default': cost_sigmoid,
+    'gelu.default': cost_gelu,
+    'gelu_.defualt': cost_gelu,
+    'relu_.default': cost_elemwise,
+    'relu.default': cost_elemwise,
+    'softmax': cost_softmax,
+    '_softmax.default': cost_softmax,
+    'mean.dim': cost_mean,
     # 'linear.default': FunctionFLOPs_linear,
     # 'linear': FunctionFLOPs_linear,
-    # 'conv1d': FunctionFLOPs_convnd,
-    # 'conv2d': FunctionFLOPs_convnd,
-    # 'conv3d': FunctionFLOPs_convnd,
+    'conv1d': cost_convnd,
+    'conv2d': cost_convnd,
+    'conv3d': cost_convnd,
+    'max_pool2d_with_indices.default': cost_maxpoolnd,
     # 'leaky_relu': FunctionFLOPs_leaky_relu,
     # 'pad': FunctionFLOPs_zero,
     # 'floordiv': FunctionFLOPs_zero,

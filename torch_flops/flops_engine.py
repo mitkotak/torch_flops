@@ -283,8 +283,9 @@ class TorchFLOPsByFX():
         model.eval()
         try:
             from torch.fx.experimental.proxy_tensor import make_fx
-            es = torch.export.export(model, args)
-            self.graph_model: GraphModule = make_fx(es.module())(*args)
+            # es = torch.export.export(model, args)
+            # self.graph_model: GraphModule = make_fx(es.module())(*args)
+            self.graph_model: GraphModule = make_fx(model)(*args)
         except torch.fx.proxy.TraceError as e:
             print("\033[33mNOTE: The model cannot be built as a graph model by 'symbolic_trace()'. Please remove the `assert`, `if` and `for` operations. " +
                   "See 'https://pytorch.org/docs/stable/fx.html#limitations-of-symbolic-tracing' for more instructions.\033[0m")
