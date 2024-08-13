@@ -706,7 +706,7 @@ def cost_index_select(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
 
 def cost_index_tensor(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
     input_tensor = args[0]  # Assuming the first argument is the input tensor
-    index_tensor = args[1][0]  # Assuming the second argument is an index list
+    index_tensor = list(filter(lambda x: x is not None, args[1]))[0]  # Assuming the second argument is an index list and has one non-None element
     
     # Number of elements in the index tensor
     num_indices = index_tensor.numel()
@@ -742,6 +742,28 @@ def cost_silu(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
     
     # Total FLOPs
     flops = num_elements * flops_per_silu
+
+    # Memory calculation
+    dtype_size = self_obj.element_size()  # Get the size of the data type in bytes
+    input_mem = num_elements * dtype_size  # Read input tensor
+    output_mem = num_elements * dtype_size  # Write output tensor
+    mem = input_mem + output_mem
+
+    return flops, mem
+
+def cost_silu(result: Tensor, *args, **kwargs) -> Tuple[int, int]:
+    self_obj = args[0]
+    
+    # Number of elements in the input tensor
+    num_elements = self_obj.numel()
+    
+    # FLOPs for sigmoid calculation per element:
+    # sigmoid(x) = 1 / (1 + exp(-x))
+    # This involves 1 exponential, 1 addition, and 1 division per element
+    flops_per_sigmoid = 4  # considering exp, addition, division, and multiplication for 1 / (1 + exp(-x))
+        
+    # Total FLOPs
+    flops = num_elements * flops_per_sigmoid
 
     # Memory calculation
     dtype_size = self_obj.element_size()  # Get the size of the data type in bytes
@@ -846,6 +868,8 @@ FUNCTION_COST_MAPPING = {
     'add': cost_elemwise,
     '_assert': cost_zero,
     'eq': cost_elemwise,
+    'rsqrt.default': cost_elemwise,
+    'sigmoid.default': cost_elemwise,
     # 'linear.default': FunctionFLOPs_linear,
     # 'linear': FunctionFLOPs_linear,
     # 'conv1d': FunctionFLOPs_convnd,
