@@ -20,6 +20,13 @@ REF: https://github.com/pytorch/pytorch/blob/main/torch/fx/passes/shape_prop.py
 
 __all__ = ['TorchFLOPsByFX']
 
+def roofline_time(mem, flops, peak_bandwidth, peak_flops):
+    """Computes roofline time"""
+    t_mem = mem / peak_flops
+    t_flops = flops / peak_bandwidth
+    
+    analytical_time = max(t_flops, t_mem)
+    return analytical_time
 
 @compatibility(is_backward_compatible=True)
 class TensorMetadata(NamedTuple):
@@ -128,6 +135,7 @@ class ShapeProp(torch.fx.Interpreter):
 
     def __init__(self, gm: GraphModule, **kwargs):
         super().__init__(gm)
+        system = kwargs.get('system')
         ignore_ops = kwargs.get('ignore_ops', [])
     
         fake_mode = None
@@ -151,6 +159,7 @@ class ShapeProp(torch.fx.Interpreter):
         self.real_module = self.module
         self.ignore_ops = ignore_ops
         self.device = torch.device('cuda')
+        self.system = system
 
     @compatibility(is_backward_compatible=True)
     def call_function(self, target: 'Target', args: Tuple[Argument, ...], kwargs: Dict[str, Any]) -> Any:
@@ -169,18 +178,8 @@ class ShapeProp(torch.fx.Interpreter):
         """
         assert not isinstance(target, str)
 
-        if self.device.type == 'cuda':
-            torch.cuda.synchronize(self.device)
-        t_start = time.time()
-
         # Execute the function and return the result
         result = target(*args, **kwargs)
-
-        if self.device.type == 'cuda':
-            torch.cuda.synchronize(self.device)
-        t_end = time.time()
-        exec_time = (t_end - t_start) * 1000
-
 
         func_name = target.__name__
         flops = None
@@ -190,7 +189,9 @@ class ShapeProp(torch.fx.Interpreter):
                 flops, mem = FUNCTION_COST_MAPPING[func_name](result, *args, **kwargs)
             else:
                 flops, mem = 0, 0
-
+                
+        exec_time = roofline_time(flops, mem, self.system['peak_bandwidth'], self.system['peak_flops'])
+ 
         return result, flops, mem, exec_time
 
     def run_node(self, n: Node) -> Any:
@@ -211,19 +212,11 @@ class ShapeProp(torch.fx.Interpreter):
                         if n.op == 'call_function':
                             result, flops, mem, exec_time = getattr(self, n.op)(n.target, args, kwargs)
                         else:
-                            if self.device.type == 'cuda':
-                                torch.cuda.synchronize(self.device)
-                            t_start = time.time()
-
-                            result = getattr(self, n.op)(n.target, args, kwargs)
-
-                            if self.device.type == 'cuda':
-                                torch.cuda.synchronize(self.device)
-                            t_end = time.time()
-                            exec_time = (t_end - t_start) * 1000
-
+                            result = getattr(self, n.op)(n.target, args, kwargs)                    
                             flops, mem = 0,0
                         assert flops not in n.meta, n.meta.keys()
+
+                        exec_time = roofline_time(flops, mem, self.system['peak_bandwidth'], self.system['peak_flops'])
 
                         n.meta['flops'] = flops
                         n.meta['time'] = exec_time
@@ -327,7 +320,7 @@ class TorchFLOPsByFX():
         
         self.output_memory =  sum(tensor.element_size() * tensor.numel() for tensor in outputs_args)
 
-        ShapeProp(self.graph_model, ignore_ops=self.ignore_ops).propagate(*args)
+        ShapeProp(self.graph_model, system=self.system, ignore_ops=self.ignore_ops).propagate(*args)
 
         result_table = []
         for node in self.graph_model.graph.nodes:
@@ -397,18 +390,24 @@ class TorchFLOPsByFX():
         self.total_flops = total_flops
         return total_flops
 
-    def print_empirical_total_time(self, show: bool = True) -> float:
+    def print_total_time(self, show: bool = True) -> float:
         if not self.__flag_propagated:
             raise RuntimeError(f"Use `propagate()` method first.")
 
         valid_time_list = list(filter(lambda _f: isinstance(_f, float), list(zip(*self.result_table))[4]))
-        total_time = sum(valid_time_list)
+        self.total_time = sum(valid_time_list)
 
         if show:
-            print(f"total_time = {total_time:.3f} ms")
+            print(f"total_time = {self.total_time:.3f} ms")
 
-        return total_time
+        return self.total_time
 
+    def print_model_intensity(self, show: bool=True):
+        if not self.__flag_propagated:
+            raise RuntimeError(f"Use `propagate()` method first.")
+        
+        return self.total_flops/self.total_memory
+        
     def print_max_memory(self, show=True) -> int:
         if not self.__flag_propagated:
             raise RuntimeError(f"Use `propagate()` method first.")
@@ -422,25 +421,15 @@ class TorchFLOPsByFX():
         
         return self.total_memory
 
-    def print_analytical_total_time(self, show=True) -> int:
+    def print_arithmetic_intensity(self, show=True) -> int:
         if not self.__flag_propagated:
             raise RuntimeError(f"Use `propagate()` method first.")
         
-        peak_bandwidth = self.system['peak_bandwidth']
-        peak_flops = self.system['peak_flops']
-        
-        t_mem = self.total_memory / peak_bandwidth
-        t_flops = self.total_flops / peak_flops
-        
-        intensity = t_flops / t_mem
-        analytical_time = max(t_flops, t_mem)
+        intensity = self.total_flops / self.total_memory
         if show:
-            print(f"arithmetic intensity = {intensity:3f} analytical time = {analytical_time*1000:.3f} ms GFLOPs/s = {((self.total_flops/1e9)/analytical_time):.3f}")
-            
-        
-        return analytical_time, intensity
-        
-        
+            print(f"arithmetic intensity = {intensity:3f} analytical time = {self.total_time*1000:.3f} ms GFLOPs/s = {((self.total_flops/1e9)/self.total_time):.3f}")
+
+        return self.intensity
         
     def save_result_to_csv(self, file_path:str, mode:str='a'):
         with open(file_path, mode) as f:

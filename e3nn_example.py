@@ -182,6 +182,7 @@ for lmax in range(1,6):
     flops_counter.propagate(*args)
     total_flops = flops_counter.print_total_flops(show=False)
     total_memory = flops_counter.print_max_memory(show=False)
-    analytical_time, intensity = flops_counter.print_analytical_total_time(show=False)
-    print(f"lmax {lmax} channel {channel} intensity {intensity} GFLOPs/s {((total_flops/1e9)/analytical_time):6f}" )
+    analytical_time = flops_counter.print_total_time(show=False)
+    intensity = flops_counter.print_model_intensity(show=False)
+    print(f"lmax {lmax} channel {channel} intensity {intensity:3f} GFLOPs/s {((total_flops/1e9)/analytical_time):6f}" )
 
