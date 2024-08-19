@@ -1,6 +1,7 @@
 # flake8: noqa
 
 import torch
+from torch._inductor.utils import print_performance
 import e3nn
 from e3nn import o3, nn
 e3nn.set_optimization_defaults(jit_script_fx=False)
@@ -14,8 +15,8 @@ layer = "mlp_linear"
 if layer == 'mlp_linear':
     x = torch.randn(3)
     model = torch.nn.Linear(in_features=3, out_features=4)
-    args = (x,) 
-    
+    args = (x,)
+
 if layer == 'linear':
     irreps = o3.Irreps("1o")
     x = irreps.randn(-1).to(device=device)
@@ -155,7 +156,7 @@ class FullTensorProductSparse(nn.Module):
             chunk = transpose(chunk)
             chunk = torch.reshape(chunk, leading_shape + (output_mul * output_dim, ))
             chunks.append(chunk)
-        
+
         return torch.cat([chunks[i] for i in self.inv], dim=-1)
 
 import torch
@@ -166,23 +167,28 @@ from torch_flops.flops_engine import TorchFLOPsByFX
 # flops_counter.propagate(*args)
 
 # result_table = flops_counter.print_result_table()
-for lmax in range(1,6):
-  for channel in [1, 128]:
-    irreps_x = o3.Irreps.spherical_harmonics(lmax)
-    irreps_y = channel * irreps_x
-    irreps_out = channel*o3.Irreps.spherical_harmonics(2*lmax) # Assuming uvu for now
-    args = (irreps_x.randn(-1).to(device='cuda'),
-            irreps_y.randn(-1).to(device='cuda'))
+# for lmax in range(1,6):
+for lmax in [3]:
+    for channel in [1]:
+#   for channel in [1, 128]:
+        print(lmax, channel)
+        irreps_x = o3.Irreps.spherical_harmonics(lmax)
+        irreps_y = channel * irreps_x
+        irreps_out = channel*o3.Irreps.spherical_harmonics(2*lmax) # Assuming uvu for now
+        args = (irreps_x.randn(100, -1).to(device='cuda'),
+                irreps_y.randn(100, -1).to(device='cuda'))
 
-    tp = o3.FullyConnectedTensorProduct(irreps_in1=irreps_x, irreps_in2=irreps_y, irreps_out=irreps_out).to(device='cuda')
+        tp = o3.FullTensorProduct(irreps_in1=irreps_x, irreps_in2=irreps_y).to(device='cuda')
 
+        from torch_flops.flops_engine import TorchFLOPsByFX
+        flops_counter = TorchFLOPsByFX(system, tp, args)
+        flops_counter.propagate(*args)
+        result_table = flops_counter.print_result_table()
+        total_flops = flops_counter.print_total_flops(show=False)
+        total_memory = flops_counter.print_max_memory(show=False)
+        analytical_time = flops_counter.print_total_time(show=False)
+        intensity = flops_counter.print_arithmetic_intensity(show=False)
 
-    from torch_flops.flops_engine import TorchFLOPsByFX
-    flops_counter = TorchFLOPsByFX(system, tp, args)
-    flops_counter.propagate(*args)
-    total_flops = flops_counter.print_total_flops(show=False)
-    total_memory = flops_counter.print_max_memory(show=False)
-    analytical_time = flops_counter.print_total_time(show=False)
-    intensity = flops_counter.print_model_intensity(show=False)
-    print(f"lmax {lmax} channel {channel} intensity {intensity:3f} GFLOPs/s {((total_flops/1e9)/analytical_time):6f}" )
-
+        tp = torch.compile(tp, fullgraph=True)
+        print(f"Analytical Time: {analytical_time*1000} ms")
+        print(f"Empirical Time: {print_performance(lambda: tp(*args))*1000} ms")

@@ -20,10 +20,10 @@ REF: https://github.com/pytorch/pytorch/blob/main/torch/fx/passes/shape_prop.py
 
 __all__ = ['TorchFLOPsByFX']
 
-def roofline_time(mem, flops, peak_bandwidth, peak_flops):
+def roofline_time(flops, peak_flops, mem, peak_bandwidth):
     """Computes roofline time"""
-    t_mem = mem / peak_flops
-    t_flops = flops / peak_bandwidth
+    t_mem = mem / peak_bandwidth
+    t_flops = flops / peak_flops
     
     analytical_time = max(t_flops, t_mem)
     return analytical_time
@@ -189,10 +189,8 @@ class ShapeProp(torch.fx.Interpreter):
                 flops, mem = FUNCTION_COST_MAPPING[func_name](result, *args, **kwargs)
             else:
                 flops, mem = 0, 0
-                
-        exec_time = roofline_time(flops, mem, self.system['peak_bandwidth'], self.system['peak_flops'])
  
-        return result, flops, mem, exec_time
+        return result, flops, mem
 
     def run_node(self, n: Node) -> Any:
         try:
@@ -210,13 +208,13 @@ class ShapeProp(torch.fx.Interpreter):
                         assert isinstance(kwargs, dict)
 
                         if n.op == 'call_function':
-                            result, flops, mem, exec_time = getattr(self, n.op)(n.target, args, kwargs)
+                            result, flops, mem = getattr(self, n.op)(n.target, args, kwargs)
                         else:
                             result = getattr(self, n.op)(n.target, args, kwargs)                    
                             flops, mem = 0,0
                         assert flops not in n.meta, n.meta.keys()
 
-                        exec_time = roofline_time(flops, mem, self.system['peak_bandwidth'], self.system['peak_flops'])
+                        exec_time = roofline_time(flops, self.system['peak_flops'], mem, self.system['peak_bandwidth'])
 
                         n.meta['flops'] = flops
                         n.meta['time'] = exec_time
@@ -293,7 +291,7 @@ class TorchFLOPsByFX():
 
         self.system = system
         self.result_table = []
-        self.result_header = ['node_name', 'node_op', 'op_target', 'flops', 'time(ms)', 'mem(bytes)']
+        self.result_header = ['node_name', 'node_op', 'op_target', 'flops', 'time(s)', 'mem(bytes)']
         self.__missing_values = [''] * 4 + ['ERROR']
         self.__flag_propagated = False
 
@@ -422,7 +420,7 @@ class TorchFLOPsByFX():
         
         self.intensity = self.total_flops / self.total_memory
         if show:
-            print(f"arithmetic intensity = {self.intensity:3f} analytical time = {self.total_time*1000:.3f} ms GFLOPs/s = {((self.total_flops/1e9)/self.total_time):.3f}")
+            print(f"arithmetic intensity = {self.intensity:3f} analytical time = {self.total_time:.3f} ms GFLOPs/s = {((self.total_flops/1e9)/self.total_time):.3f}")
 
         return self.intensity
         
