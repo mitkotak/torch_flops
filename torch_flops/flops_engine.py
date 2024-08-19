@@ -398,16 +398,11 @@ class TorchFLOPsByFX():
         self.total_time = sum(valid_time_list)
 
         if show:
-            print(f"total_time = {self.total_time:.3f} ms")
+            print(f"total_time = {self.total_time*1000:.3f} ms")
 
         return self.total_time
 
-    def print_model_intensity(self, show: bool=True):
-        if not self.__flag_propagated:
-            raise RuntimeError(f"Use `propagate()` method first.")
-        
-        return self.total_flops/self.total_memory
-        
+
     def print_max_memory(self, show=True) -> int:
         if not self.__flag_propagated:
             raise RuntimeError(f"Use `propagate()` method first.")
@@ -425,9 +420,9 @@ class TorchFLOPsByFX():
         if not self.__flag_propagated:
             raise RuntimeError(f"Use `propagate()` method first.")
         
-        intensity = self.total_flops / self.total_memory
+        self.intensity = self.total_flops / self.total_memory
         if show:
-            print(f"arithmetic intensity = {intensity:3f} analytical time = {self.total_time*1000:.3f} ms GFLOPs/s = {((self.total_flops/1e9)/self.total_time):.3f}")
+            print(f"arithmetic intensity = {self.intensity:3f} analytical time = {self.total_time*1000:.3f} ms GFLOPs/s = {((self.total_flops/1e9)/self.total_time):.3f}")
 
         return self.intensity
         

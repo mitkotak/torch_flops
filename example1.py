@@ -12,7 +12,7 @@ from torch._inductor.utils import print_performance
 from torch_flops import TorchFLOPsByFX
 
 system = {'peak_bandwidth': 768e9,
-         'peak_flops': 17.01e12}
+         'peak_flops': 17.05e12}
 
 '''
 Count the FLOPs of ViT-B16 and ResNet-50.
@@ -52,7 +52,8 @@ if __name__ == "__main__":
             # # Print the total FLOPs
             total_flops = flops_counter.print_total_flops(show=False)
             total_memory = flops_counter.print_max_memory(show=False)
-            analytical_time, intensity = flops_counter.print_analytical_total_time(show=True)
+            analytical_time  = flops_counter.print_total_time(show=False)
+            arithmetic_intensity  = flops_counter.print_arithmetic_intensity(show=True)
             
             print(f"channel {channel} {print_performance(lambda: vit(x))*1000} ms")
         elif model_arch == 'resnet50':
@@ -69,6 +70,8 @@ if __name__ == "__main__":
             # result_table = flops_counter.print_result_table()
             total_flops = flops_counter.print_total_flops(show=False)
             total_memory = flops_counter.print_max_memory(show=False)
-            analytical_time, intensity = flops_counter.print_analytical_total_time(show=True)
+            analytical_time  = flops_counter.print_total_time(show=False)
+            arithmetic_intensity  = flops_counter.print_arithmetic_intensity(show=True)
+
 
             print(f"channel {channel} {print_performance(lambda: resnet(x), )*1000} ms")
